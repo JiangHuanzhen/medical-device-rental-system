@@ -1,0 +1,11 @@
+{
+  "promptDelete": false,
+  "alwaysUpdateLinks": true,
+  "newFileLocation": "folder",
+  "newFileFolderPath": "wiki/summaries",
+  "attachmentFolderPath": "attachments",
+  "useMarkdownLinks": true,
+  "showUnsupportedFiles": true,
+  "readableLineLength": false,
+  "strictLineBreaks": true
+}

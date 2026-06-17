@@ -1,0 +1,33 @@
+{
+  "name": "医疗器械租赁管理系统 — 需求工程全流程（LangGraph包装器）",
+  "nodes": [
+    {
+      "name": "定时触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [250, 300],
+      "parameters": {
+        "rule": { "interval": 0 }
+      }
+    },
+    {
+      "name": "运行 LangGraph 工作流",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [450, 300],
+      "parameters": {
+        "command": "python",
+        "commandArguments": ".claude/workflows/requirement_workflow.py",
+        "executeInFolder": "{{$env.PROJECT_ROOT}}"
+      }
+    }
+  ],
+  "connections": {
+    "定时触发": {
+      "main": [[ { "node": "运行 LangGraph 工作流", "index": 0 } ]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}
