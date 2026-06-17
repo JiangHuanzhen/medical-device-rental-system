@@ -26,7 +26,7 @@ from typing import TypedDict, List, Literal
 from datetime import datetime
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint import MemorySaver
+from langgraph.checkpoint.memory import MemorySaver
 
 # ============================================================
 # ⚙️ 配置
@@ -147,7 +147,7 @@ def call_llm(prompt: str, system_prompt: str = "") -> str:
     messages.append({"role": "user", "content": prompt})
     payload = {"model": LLM_MODEL, "messages": messages, "temperature": 0.3, "max_tokens": 16000}
     try:
-        resp = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=120)
+        resp = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=300)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
@@ -861,9 +861,8 @@ def main():
     print()
 
     if LLM_API_KEY == "sk-your-api-key":
-        print("⚠️  请先配置 LLM_API_KEY（创建 .env 文件或设置环境变量）")
-        if input("是否仍要继续？(y/n): ").strip().lower() != "y":
-            return
+        print("请先配置 LLM_API_KEY（创建 .env 文件或设置环境变量）")
+        return
 
     # 构建 + 编译
     workflow = build_workflow()
