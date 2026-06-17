@@ -33,8 +33,8 @@ from langgraph.checkpoint import MemorySaver
 # ============================================================
 
 LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-your-api-key")
-LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions")
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
+LLM_API_URL = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 
 STAKEHOLDER_API = "https://210.34.148.101:5000/api/chat"
 PROJECT_ID = "10"
