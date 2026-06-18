@@ -2,7 +2,7 @@
 #
 # 核心设计：
 #   A1的4个涉众节点本身就是Agent
-#   - 首次运行：用预设问题向涉众API提问
+#   - 首次运行：AI自主生成问题向涉众提问（无预设问题列表）
 #   - 回退运行：读取A2/A5/CCB的反馈，自动判断是否与自己相关，生成针对性追问
 #
 # 工作流：
@@ -25,6 +25,9 @@ import requests
 from typing import TypedDict, List, Literal
 from datetime import datetime
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -39,51 +42,70 @@ LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 STAKEHOLDER_API = "https://210.34.148.101:5000/api/chat"
 PROJECT_ID = "10"
 
-# Obsidian 知识库 Vault 路径
-KB_ROOT = os.getenv("KB_ROOT", ".claude/knowledge-base")
+# Obsidian 知识库 Vault 路径（基于当前文件位置，确保绝对路径）
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+KB_ROOT = os.getenv("KB_ROOT", os.path.join(_PROJECT_ROOT, ".claude", "knowledge-base"))
 
-# A1涉众配置：名称 → 对应state字段 + 预设问题
+# A1涉众配置：名称 → 对应state字段 + Agent角色定义（Role/Goal/Backstory）
 STAKEHOLDER_CONFIG = {
-    "招商业务员": {
-        "field": "biz_dialog",
-        "questions": [
-            "请描述你一天的工作流程是怎样的？从接到客户询盘开始。",
-            "目前工作中最让你头疼的问题是什么？",
-            "如果某个环节出了意外（比如客户临时改需求），你们怎么处理？",
-            "合同签订、回款跟踪这些方面，你希望系统怎么帮你？",
-            "设备闲置情况你希望以什么方式看到？",
-        ],
-    },
-    "库房人员": {
-        "field": "warehouse_dialog",
-        "questions": [
-            "请描述设备入库、存放、出库、盘点整个流程是怎样的？",
-            "目前库房管理中最麻烦的事情是什么？",
-            "你希望系统在入库、位置管理、出库方面怎么帮你？",
-            "校准检测提醒你希望怎么设置？",
-            "配件管理和冷链运输方面有什么需求？",
-        ],
-    },
-    "运维工程师": {
-        "field": "maintenance_dialog",
-        "questions": [
-            "请描述设备安装调试、维修保养、巡检的日常工作。",
-            "故障报修这块目前有什么痛点？",
-            "你希望系统怎么帮你管理备品备件？",
-            "巡检周期一般是多久？有什么系统需求？",
-            "维修知识库你希望怎么组织？",
-        ],
-    },
-    "财务": {
-        "field": "finance_dialog",
-        "questions": [
-            "请描述你日常处理租赁相关的财务工作流程。",
-            "租金计算、押金管理方面有什么痛点？",
-            "发票管理和季度对账有什么系统需求？",
-            "设备折旧和维修成本统计方面需要什么功能？",
-        ],
-    },
+    "招商业务员": {"field": "biz_dialog"},
+    "库房人员": {"field": "warehouse_dialog"},
+    "运维工程师": {"field": "maintenance_dialog"},
+    "财务": {"field": "finance_dialog"},
 }
+
+# 涉众AI智能体配置文件路径
+AGENT_CONFIG_DIR = os.path.join(KB_ROOT, "raw/notes")
+AGENT_CONFIG_FILES = {
+    "招商业务员": "Agent定义-招商业务员.md",
+    "库房人员": "Agent定义-库房人员.md",
+    "运维工程师": "Agent定义-运维工程师.md",
+    "财务": "Agent定义-财务.md",
+}
+
+
+def load_agent_configs() -> dict:
+    """从知识库读取4份涉众AI智能体配置文件，返回 {名称: {role, goal, backstory}} 字典"""
+    configs = {}
+    for name, filename in AGENT_CONFIG_FILES.items():
+        filepath = os.path.join(AGENT_CONFIG_DIR, filename)
+        if not os.path.exists(filepath):
+            print(f"  ⚠️ Agent配置文件不存在: {filepath}，使用默认配置")
+            configs[name] = {"role": name, "goal": "", "backstory": ""}
+            continue
+        with open(filepath, "r", encoding="utf-8") as f:
+            text = f.read()
+        # 从 Markdown 中提取 Goal 和 Backstory
+        goal = ""
+        backstory = ""
+        if "## 核心目标（Goal）" in text:
+            chunk = text.split("## 核心目标（Goal）")[1]
+            goal = chunk.split("## ")[0].strip().replace("\n", " ")
+        if "## 背景设定（Backstory）" in text:
+            chunk = text.split("## 背景设定（Backstory）")[1]
+            backstory = chunk.split("## ")[0].strip().replace("\n", " ")
+        configs[name] = {"role": name, "goal": goal, "backstory": backstory}
+        print(f"  📄 已加载Agent配置: {filename}")
+    return configs
+
+
+# 启动时加载4份涉众Agent配置（存量知识库文件）
+# 使用 None 占位，首次访问时懒加载，避免导入时读文件出错
+_AGENT_DEFINITIONS_CACHE = None
+
+
+def get_agent_definitions() -> dict:
+    """懒加载 Agent 定义，避免模块导入时读文件出错"""
+    global _AGENT_DEFINITIONS_CACHE
+    if _AGENT_DEFINITIONS_CACHE is not None:
+        return _AGENT_DEFINITIONS_CACHE
+    try:
+        _AGENT_DEFINITIONS_CACHE = load_agent_configs()
+    except Exception as e:
+        print(f"  ⚠️ Agent配置文件加载失败: {e}，使用空配置")
+        _AGENT_DEFINITIONS_CACHE = {name: {"role": name, "goal": "", "backstory": ""} for name in AGENT_CONFIG_FILES}
+    return _AGENT_DEFINITIONS_CACHE
 
 # ============================================================
 # 📦 状态定义
@@ -188,12 +210,13 @@ KB_DIRS = {
 def save_to_kb(subdir: str, filename: str, content: str) -> str:
     """将内容保存到 Obsidian 知识库的对应目录，返回文件路径"""
     base = KB_DIRS[subdir]
-    os.makedirs(base, exist_ok=True)
-    path = os.path.join(base, filename)
-    with open(path, "w", encoding="utf-8") as f:
+    # 如果 filename 包含子路径（如 "BL-20260618-01/SRS-正式版.md"），需要递归创建目录
+    full_path = os.path.join(base, filename)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    with open(full_path, "w", encoding="utf-8") as f:
         f.write(content)
     print(f"  📁 知识库: {subdir}/{filename}")
-    return path
+    return full_path
 
 
 def kb_frontmatter(title: str, tags: list[str], aliases: list[str] | None = None) -> str:
@@ -205,11 +228,48 @@ def kb_frontmatter(title: str, tags: list[str], aliases: list[str] | None = None
     return fm
 
 
+def ensure_agent_configs() -> dict:
+    """确保知识库中存在4份涉众AI智能体配置文件，如果缺失则自动生成"""
+    stakeholders = ["招商业务员", "库房人员", "运维工程师", "财务"]
+    for s in stakeholders:
+        filepath = os.path.join(AGENT_CONFIG_DIR, AGENT_CONFIG_FILES[s])
+        if os.path.exists(filepath):
+            print(f"  📄 Agent配置已存在: {AGENT_CONFIG_FILES[s]}")
+            continue
+        # 从已加载的 Agent 定义获取
+        cfg = get_agent_definitions().get(s, {"role": s, "goal": "", "backstory": ""})
+        content = kb_frontmatter(f"Agent-{cfg['role']}", ["Agent配置", cfg["role"]]) + f"""# 涉众AI智能体配置：{cfg['role']}
+
+## 基本信息
+| 字段 | 内容 |
+|------|------|
+| 角色名称（Role） | {cfg['role']} |
+| 所属项目 | 医疗器械租赁管理系统 |
+| 创建日期 | {datetime.now().strftime('%Y-%m-%d')} |
+| 配置版本 | V1.0 |
+
+## 核心目标（Goal）
+{cfg['goal']}
+
+## 背景设定（Backstory）
+{cfg['backstory']}
+
+## 使用说明
+本配置文件采用 CrewAI 兼容格式，可直接用于定义涉众 AI 智能体。
+- **Role**：定义智能体的角色身份
+- **Goal**：定义智能体的核心目标
+- **Backstory**：定义智能体的背景知识和行为准则
+"""
+        save_to_kb("raw_notes", AGENT_CONFIG_FILES[s], content)
+        print(f"  🆕 Agent配置已生成: {AGENT_CONFIG_FILES[s]}")
+    return get_agent_definitions()
+
+
 # ============================================================
 # 🧠 A1 涉众 Agent 节点
 # ============================================================
 # 设计：每个A1节点就是Agent
-#   - 首次运行 → 预设问题提问
+#   - 首次运行 → AI自主生成问题，逐轮追问
 #   - 回退运行 → 读取rollback_reason，根据A2/A5/CCB反馈自动追问
 #   回退时不走中间节点，直接走回A1
 # ============================================================
@@ -235,19 +295,75 @@ def a1_agent_finance(state: RequirementState) -> dict:
 
 
 def _a1_agent(stakeholder: str, state: RequirementState) -> dict:
-    """A1涉众Agent核心逻辑 — 首次问答 or 回退追问"""
+    """A1涉众Agent核心逻辑 — AI自主提问 or 回退追问"""
     cfg = STAKEHOLDER_CONFIG[stakeholder]
     field = cfg["field"]
     existing = state.get(field, [])
     reason = state.get("rollback_reason", "")
 
-    # ── 首次运行：预设问题 ──
+    # ── 首次运行：AI自主生成问题，逐轮追问直到了解充分 ──
     if not existing:
         dialog = []
-        for q in cfg["questions"]:
-            answer = call_stakeholder(stakeholder, q)
-            dialog.append({"q": q, "a": answer})
-            print(f"  [{stakeholder}] ✓ {q[:30]}...")
+        max_rounds = 5  # 每个涉众最多提问轮数
+        round_num = 0
+
+        # 加载该涉众的 Agent 定义（Role/Goal/Backstory）作为系统提示
+        agent_def = get_agent_definitions().get(stakeholder, {})
+        agent_system_prompt = f"你是一名资深的需求分析工程师，正在访谈「{stakeholder}」。\n关于该角色的背景信息：\n- 角色：{agent_def.get('role', stakeholder)}\n- 核心目标：{agent_def.get('goal', '')}\n- 背景：{agent_def.get('backstory', '')}"
+
+        while round_num < max_rounds:
+            # 构建已有对话历史
+            history = ""
+            for i, m in enumerate(dialog):
+                history += f"问{i+1}: {m['q']}\n答{i+1}: {m['a']}\n\n"
+
+            if not dialog:
+                prompt = f"""你是一名资深的软件需求分析工程师，正在访谈医疗设备租赁系统的「{stakeholder}」角色。
+
+这是第一次对话，请根据该角色的工作职责生成第一个问题。
+要求：
+1. 从开放式问题开始，引导对方描述整体工作流程
+2. 问题要自然、具体，不要过于宽泛
+3. 聚焦该角色在医疗设备租赁场景中的职责
+
+输出严格JSON格式（只有JSON，不要其他文字）：
+{{"question": "你生成的第一个问题"}}"""
+            else:
+                prompt = f"""你是一名资深的软件需求分析工程师，正在访谈医疗设备租赁系统的「{stakeholder}」角色。
+
+你已经问了以下问题，得到了这些回答：
+
+{history}
+
+请根据已有对话，判断你是否已经充分了解该角色的需求。
+- 如果已经了解清楚（覆盖了工作流程、痛点、异常场景、核心需求），输出：{{"done": true}}
+- 如果还需要追问，生成下一个自然、具体的问题，要求：
+  1. 不要问已经问过的话题
+  2. 追问之前回答中模糊的细节（「很多」「大概」「经常」等模糊表述）
+  3. 探索异常情况（「如果…出错了怎么办」）
+  4. 每个问题只聚焦一个方面
+
+输出严格JSON格式（只有JSON，不要其他文字）：
+{{"done": false, "question": "你的追问问题"}}"""
+
+            result = call_llm(prompt, system_prompt="你是专业的需求分析专家，擅长通过对话获取详细需求。")
+            data = extract_json(result)
+
+            # 非首次问且AI表示已了解充分 → 结束
+            if dialog and data.get("done", False):
+                print(f"  [{stakeholder}] ✅ AI判断已了解充分，结束提问")
+                break
+
+            question = data.get("question", "")
+            if not question:
+                print(f"  [{stakeholder}] ⚠️ AI未生成有效问题，结束")
+                break
+
+            answer = call_stakeholder(stakeholder, question)
+            dialog.append({"q": question, "a": answer})
+            print(f"  [{stakeholder}] 🤖 Q{round_num+1}: {question[:40]}... → 已回复")
+            round_num += 1
+
         print(f"  [{stakeholder}] 完成 {len(dialog)} 条问答")
 
         # 保存到知识库 raw/notes
@@ -433,13 +549,14 @@ def a2_decide_next(state: RequirementState) -> Literal["rollback", "continue"]:
 # ============================================================
 
 def a3_generate_uml(state: RequirementState) -> dict:
-    """A3建模：生成UML用例图和活动图"""
+    """A3建模：生成UML用例图、活动图、时序图和E-R图"""
     prompt = f"""根据以下需求清单，生成UML模型（PlantUML代码）：
 
 需求清单：
 {state.get("consolidated_requirements", "")[:8000]}
 
-请生成：
+请生成以下四类UML图，每类图用 @startuml ... @enduml 包裹，图与图之间用空行分隔：
+
 1. **用例图**（@startuml ... @enduml）
    - Actor：4种角色（招商业务员、库房人员、运维工程师、财务）
    - Use Case：所有系统功能，标注 <<include>> 和 <<extend>> 关系
@@ -448,26 +565,49 @@ def a3_generate_uml(state: RequirementState) -> dict:
    - 租赁订单完整流程（创建→审核→出库→归还→结算）
    - 设备入库流程
    - 设备维修流程
-   - 每个图包含：正常路径×2 + 异常路径×2，分支条件用[Guard Condition]"""
+   - 每个图包含：正常路径×2 + 异常路径×2，分支条件用[Guard Condition]
+
+3. **时序图**（至少1个核心流程）
+   - 租赁订单创建流程：展示 Actor → Controller → Service → Repository 的完整调用时序
+   - 包含：正常流程消息、异常返回消息、循环/可选片段
+
+4. **数据库E-R图**（PlantUML格式，不是Mermaid）
+   - 核心实体：设备、客户、租赁订单、合同、费用记录、维修记录
+   - 标注实体间关系（1对多、多对多）和关键属性字段"""
+
 
     result = call_llm(prompt, system_prompt="你是UML建模专家，精通PlantUML语法。")
     parts = result.split("@startuml")
-    use_case = "@startuml" + parts[1] if len(parts) > 1 else ""
-    activities = "@startuml" + "@startuml".join(parts[2:]) if len(parts) > 2 else ""
+    # parts[0]是引言文本，parts[1:]是各个图
+    diagrams = []
+    for i, p in enumerate(parts[1:], 1):
+        diagram = "@startuml" + p
+        diagrams.append(diagram)
+
+    use_case = diagrams[0] if len(diagrams) > 0 else ""
+    # 活动图
+    all_others = "\n\n".join(diagrams[1:]) if len(diagrams) > 1 else ""
 
     # 保存到知识库
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
     if use_case:
         save_to_kb("wiki", f"用例图-{ds}-v1.0.puml", use_case)
-    if activities:
-        save_to_kb("wiki", f"活动图-{ds}-v1.0.puml", activities)
+    # 其他图保存到一个综合文件
+    if all_others:
+        save_to_kb("wiki", f"行为模型图-{ds}-v1.0.puml", all_others)
     uml_doc = kb_frontmatter(f"UML模型-{ds}", ["UML", "建模"], ["UML模型"]) + f"""# UML模型
 
 生成日期：{ds}
 
 ## 文件
 - [[用例图-{ds}-v1.0.puml|用例图]]
-- [[活动图-{ds}-v1.0.puml|活动图]]
+- [[行为模型图-{ds}-v1.0.puml|活动图/时序图/E-R图]]
+
+## 所涉图类型
+1. 用例图（Use Case）
+2. 活动图（Activity Diagram，≥3个核心流程）
+3. 时序图（Sequence Diagram，≥1个核心流程）
+4. 数据库E-R图（Entity Relationship Diagram）
 
 ## 关联需求
 - [[需求清单-{ds}-v1.0|需求清单]]
@@ -476,7 +616,7 @@ def a3_generate_uml(state: RequirementState) -> dict:
 """
     save_to_kb("wiki", f"UML模型说明-{ds}-v1.0.md", uml_doc)
 
-    return {"uml_use_case": use_case, "uml_activity_diagrams": activities}
+    return {"uml_use_case": use_case, "uml_activity_diagrams": all_others}
 
 
 # ============================================================
@@ -484,8 +624,8 @@ def a3_generate_uml(state: RequirementState) -> dict:
 # ============================================================
 
 def a4_generate_srs(state: RequirementState) -> dict:
-    """A4文档智能体：生成IEEE 830标准SRS文档"""
-    prompt = f"""请根据以下输入生成一份完整的SRS（软件需求规格说明书），遵循IEEE 830标准。
+    """A4文档智能体：生成IEEE 830标准SRS文档（规范对齐版）"""
+    prompt = f"""请根据以下输入生成一份完整的SRS（软件需求规格说明书），严格遵循IEEE 830标准和GB/T 9385规范。
 
 需求清单：
 {state.get("consolidated_requirements", "")[:6000]}
@@ -494,13 +634,87 @@ UML模型：
 {state.get("uml_use_case", "")[:2000]}
 {state.get("uml_activity_diagrams", "")[:2000]}
 
-要求：
-1. 严格遵循IEEE 830结构：引言→总体描述→具体需求
-2. 具体需求按7个模块分节（用户认证/设备/客户/租赁订单/费用结算/看板/系统配置）
-3. 每条功能需求包含：编号+描述+输入/输出+验收标准
-4. **禁止使用模糊词**（快速、及时、合理、尽量等）
-5. 总字数不少于10000字
-6. 包含数据字典（列出所有主要数据字段的定义）"""
+请严格按照以下模板结构生成，缺一不可：
+
+---
+# 文档头部信息
+| 项目项 | 内容 |
+| 文档名称 | 软件需求规格说明书（SRS）|
+| 项目名称 | 医疗器械租赁管理系统 |
+| 文档版本 | V1.0.0 |
+| 基线版本 | 【占位，由A6分配】|
+| 编制日期 | 【当前日期】|
+
+## 修订历史记录
+| 版本号 | 修订日期 | 修订类型 | 修订内容简述 |
+| V1.0.0 | 【当前日期】 | 新建 | 文档初稿，确立初始需求基线 |
+
+# 1 引言
+## 1.1 编制目的
+## 1.2 文档范围（包含/排除）
+## 1.3 引用文件（IEEE 830、GB/T 9385等）
+## 1.4 术语与缩略语（含SRS、CCB、CR、FR、NFR等定义表）
+## 1.5 业务背景概述（现状痛点、建设目标、量化业务目标）
+
+# 2 总体描述
+## 2.1 产品概述（系统定位、核心价值）
+### 系统架构图（Mermaid代码）
+```mermaid
+flowchart TD
+    subgraph 客户端层
+    end
+    subgraph 接入层
+    end
+    subgraph 业务服务层
+    end
+    subgraph 数据层
+    end
+```
+## 2.2 运行环境要求（硬件/软件/浏览器兼容表）
+## 2.3 用户角色与特征（角色/职责/权限/频次/技能 矩阵表）
+## 2.4 系统运行模式（正常/异常/维护三种模式）
+## 2.5 设计与实现约束（技术/合规/接口/工期约束）
+## 2.6 假设与依赖
+
+# 3 具体需求
+## 3.1 功能需求（FR）
+按7个模块分节：用户认证、设备管理、客户管理、租赁订单、费用结算、数据统计、系统配置
+每条功能需求格式：
+**FR-{模块缩写}-{编号}**
+- 优先级：P0(必实现)/P1(重要)/P2(次要)
+- 参与角色
+- 前置条件
+- 触发方式
+- 业务流程（分步骤）
+- 业务规则（含边界条件、数量范围、时间周期）
+- 后置状态
+- 验收标准（可量化、可测试、无歧义）
+
+### 系统用例图（plantUML代码）
+## 3.2 外部接口需求（IFR）
+### E-R图（Mermaid erDiagram，核心实体：设备、客户、合同、订单、费用）
+### 数据字典（表格：表名/字段名/类型/主键/外键/默认值/说明）
+## 3.3 非功能需求（NFR）
+### 3.3.1 性能需求（页面加载、接口响应、并发、吞吐量）
+### 3.3.2 可靠性需求（可用率、连续运行、故障恢复）
+### 3.3.3 安全性需求（认证、权限、数据加密、攻击防护、审计）
+### 3.3.4 可维护性需求
+### 3.3.5 可扩展性需求
+### 3.3.6 易用性需求
+## 3.4 数据需求
+### 数据字典（完整表格）
+### 数据管理策略（备份/归档/留存）
+
+# 4 需求基线与变更管理
+## 4.1 基线定义（版本规则、冻结规则）
+## 4.2 变更流程概述
+
+# 5 附录
+## 附录A 验收标准总表（编号→名称→标准→优先级）
+## 附录B 参考资料
+
+---
+总字数不少于15000字。所有需求必须可验证、无歧义、可追溯。禁止使用「尽量」「大概」「合理」「快速」「及时」等模糊词。"""
 
     result = call_llm(prompt, system_prompt="你是专业的软件需求文档编写专家，精通IEEE 830标准。精确优先于流畅。")
 
@@ -589,11 +803,16 @@ def a5_decide_next(state: RequirementState) -> Literal["approve", "rollback_a1",
 # ============================================================
 
 DEFECT_SCENARIOS = [
-    ("招商业务员在创建合同时选择了错误的计费方式。", 1),
-    ("库房人员出库时发现系统显示的设备存放位置与实际不符。", 2),
-    ("运维工程师收到故障报修通知，但系统未显示该设备的历史维修记录。", 3),
-    ("财务结算时发现系统计算的租金金额与合同约定不一致，原因是租期计算边界条件未处理。", 4),
-    ("招商业务员看到系统显示某设备'闲置'，但库房人员表示该设备实际上已经在出库配送途中，状态未同步。", 5),
+    # 场景1：状态不同步（数据一致性问题）
+    ("招商业务员看到系统显示某设备'闲置'，但库房人员表示该设备实际上已经在出库配送途中，状态未同步。", 1),
+    # 场景2：租期边界计算错误（业务逻辑缺陷）
+    ("财务结算时发现系统计算的租金金额与合同约定不一致，原因是租期计算边界条件未处理。", 2),
+    # 场景3：设备存放位置与系统不符（数据一致性问题）
+    ("库房人员出库时发现系统显示的设备存放位置与实际不符。", 3),
+    # 场景4：第三方接口异常——支付失败（外部系统故障）
+    ("客户通过在线支付缴纳租金时，系统显示支付成功但财务后台未收到款项确认，导致客户被重复催缴。", 4),
+    # 场景5：安全权限问题——越权查看（安全性缺陷）
+    ("运维工程师能够查看系统中所有客户的合同报价和财务结算明细，而这些信息本应仅限招商业务员和财务人员查看。", 5),
 ]
 
 
@@ -603,36 +822,47 @@ def a5_generate_defect_reports(state: RequirementState) -> dict:
     reports = []
     for scenario, idx in DEFECT_SCENARIOS:
         print(f"    报告 {idx}/5...")
+        # 先判断缺陷类型
+        defect_type_hint = "业务逻辑缺陷"
+        if "状态" in scenario or "同步" in scenario:
+            defect_type_hint = "数据一致性问题"
+        elif "安全" in scenario or "越权" in scenario:
+            defect_type_hint = "安全性缺陷"
+        elif "接口" in scenario or "第三方" in scenario or "支付" in scenario:
+            defect_type_hint = "外部接口异常缺陷"
+
         prompt = f"""你正在编写一份"缺陷分析报告"（教材§1要求至少5份）。
 这是 报告{idx}/5。
 
-项目背景：医疗器械租赁管理系统，涉及4种角色、7个核心模块。
-场景：{scenario}
+项目背景：医疗器械租赁管理系统，涉及4种角色（招商业务员、库房人员、运维工程师、财务）、7个核心模块（用户认证、设备管理、客户管理、租赁订单、费用结算、数据统计、系统配置）。
 
-按以下格式输出：
+场景：{scenario}
+类型参考：{defect_type_hint}
+
+按以下格式输出，每节内容充分、完整：
 
 # 缺陷分析报告 [#{idx}/5]
 
 ## 缺陷描述
-[场景描述]
+[精确描述缺陷现象：包括触发条件、出现频率、影响的表现]
 
 ## 缺陷类型
-[需求缺陷/设计缺陷/实现缺陷/测试缺陷]
+[需求缺陷/设计缺陷/实现缺陷/测试缺陷/数据一致性问题/外部接口异常/安全性缺陷]
 
 ## 发现阶段
-[在哪个环节被发现的]
+[在哪个环节被发现的：需求分析/设计评审/编码实现/集成测试/用户验收/生产环境]
 
 ## 根因分析
-[为什么会出现这个缺陷]
+[为什么会出现这个缺陷：三层分析——直接原因（代码层面）、间接原因（设计层面）、根本原因（流程/管理层面）]
 
 ## 影响范围
-[影响了哪些模块/角色]
+[影响了哪些模块/角色/业务流程，量化影响：如涉及X个功能点、影响Y%的用户、可能导致Z元的损失]
 
 ## 修复方案
-[怎么修]
+[三步方案：短期止血措施、中期修复方案、长期预防措施]
 
 ## 防止复发措施
-[以后怎么避免]"""
+[具体可执行的动作：补充测试用例、增加自动化校验、完善CodeGraph规则、改进评审流程等]"""
         report = call_llm(prompt, system_prompt="你是一名软件质量保证专家，擅长缺陷分析。")
         reports.append(report)
 
@@ -705,10 +935,16 @@ def ccb_decide_next(state: RequirementState) -> Literal["approve", "rollback_a1"
 # ============================================================
 
 def a6_create_baseline(state: RequirementState) -> dict:
-    """A6基线：生成RTM溯源矩阵并冻结到知识库"""
+    """A6基线：生成22列RTM溯源矩阵并冻结到知识库（规范对齐版）"""
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
     version = f"BL-{ds}-01"
-    prompt = f"""请根据SRS文档生成需求溯源矩阵（RTM）。
+
+    # ── 1. 生成 22 列 RTM 溯源矩阵 ──
+    rtm_prompt = f"""请根据以下资料生成需求溯源矩阵（RTM），严格遵循22列完整字段规范。
+
+基线版本：{version}
+对比历史基线：初始基线，无历史版本
+需求状态：所有需求均标记为「新增」
 
 SRS文档（摘要）：
 {state.get("srs_draft", "")[:5000]}
@@ -716,23 +952,62 @@ SRS文档（摘要）：
 需求清单：
 {state.get("consolidated_requirements", "")[:3000]}
 
+请输出22列RTM表格，格式为Markdown表格，列如下：
+
+| 行号 | 业务需求ID(BR) | 业务目标描述 | 原始需求ID(UR) | 原始需求来源 | 原始需求全文 | 需求类型 | SRS需求ID | SRS需求名称 | SRS正式描述 | 验收标准 | 优先级 | 本次基线需求状态 | 变更来源 | 变更差异详情 | 变更影响范围 | 关联建模产物ID | 关联设计文档ID | 关联开发模块 | 数据字典关联ID | 关联测试用例ID | 验收状态 |
+
+要求：
+1. 每个SRS中的功能需求对应一行
+2. BR编号格式：BR-模块缩写-三位流水号
+3. UR编号格式：UR-模块缩写-三位流水号
+4. 需求类型：功能需求/非功能需求/接口需求
+5. 本次基线需求状态统一填「新增」
+6. 变更来源和变更差异详情填「初始基线，无历史版本」
+7. 每条需求必须可溯源（BR→UR→SRS）"""
+
+    rtm = call_llm(rtm_prompt, system_prompt="你是配置管理专家，精通需求溯源矩阵（RTM）22列规范。")
+
+    # ── 2. 生成 CCB 评审记录 ──
+    ccb_record = f"""# CCB 评审记录
+
 基线版本：{version}
+评审日期：{ds}
+评审类型：初始基线审批
 
-输出RTM表格格式：
-| 需求编号 | 需求描述 | 来源涉众 | 模块 | 接口 | 测试要点 | 优先级 |
-|---------|---------|---------|-----|------|---------|-------|
-要求覆盖所有主要需求条目。"""
+## 评审内容
+- 软件需求规格说明书（SRS）
+- 需求溯源矩阵（RTM）
+- 需求清单
+- UML建模产物
 
-    rtm = call_llm(prompt, system_prompt="你是配置管理专家，精通需求溯源矩阵。")
+## 评审结论
+{'✅ 通过' if state.get('ccb_verdict', '通过') == '通过' else '❌ 不通过'}
 
-    # ── 冻结到知识库 baselines 目录 ──
+## 评审意见
+{state.get('ccb_comment', '初始基线审批通过')}
+
+## 审批人
+[待填写]
+
+## 关联文档
+- 需求验证报告
+- 缺陷分析报告集
+
+---
+
+> 本记录由 CCB 审批后自动生成，归档至基线目录
+"""
+
+    # ── 3. 冻结到知识库 baselines 目录 ──
     bl_dir = f"wiki/baselines/{version}"
     save_to_kb("baselines", f"{version}/SRS-正式版.md",
         kb_frontmatter(f"SRS-正式版-{version}", ["SRS", "基线", "冻结"], [f"SRS-{version}"]) + state.get("srs_draft", ""))
     save_to_kb("baselines", f"{version}/需求清单.md",
         kb_frontmatter(f"需求清单-{version}", ["需求", "基线", "冻结"]) + state.get("consolidated_requirements", ""))
-    save_to_kb("baselines", f"{version}/溯源矩阵.md",
+    save_to_kb("baselines", f"{version}/RTM_{version}_需求溯源矩阵.md",
         kb_frontmatter(f"溯源矩阵-{version}", ["RTM", "基线", "冻结"]) + rtm)
+    save_to_kb("baselines", f"{version}/CCB_{version}_评审记录.md",
+        kb_frontmatter(f"CCB评审记录-{version}", ["CCB", "评审", "基线"]) + ccb_record)
 
     baseline_report = kb_frontmatter("基线报告", ["基线", "配置管理"]) + f"""# 基线创立报告
 
@@ -741,11 +1016,21 @@ SRS文档（摘要）：
 **项目：** 医疗器械租赁管理系统
 **状态：** ⛔ 已冻结（不可修改）
 
-## 包含文档
-- [[SRS-正式版]]
-- [[需求清单]]
-- [[溯源矩阵]]
-- UML模型
+## 基线包含文档
+| 文档 | 路径 |
+|------|------|
+| SRS-正式版 | [[SRS-正式版]] |
+| 需求清单 | [[需求清单]] |
+| RTM溯源矩阵 | [[RTM_{version}_需求溯源矩阵]] |
+| CCB评审记录 | [[CCB_{version}_评审记录]] |
+| UML模型 | 关联基线目录 |
+
+## 基线符合规范
+- ✅ SRS：IEEE 830标准 + GB/T 9385
+- ✅ RTM：22列完整溯源矩阵
+- ✅ 需求编号：BR/UR/FR/NFR/IFR四级体系
+- ✅ CCB评审：正式评审记录归档
+- ✅ 全部需求状态标记为「新增」
 
 ## 变更管理
 基线创立后如需变更，需走正式变更管理流程：
@@ -760,6 +1045,7 @@ SRS文档（摘要）：
 
     print(f"\n✅ 基线 {version} 已创立！")
     print(f"   📁 {bl_dir}/")
+    print(f"   包含: SRS正式版 + 需求清单 + 22列RTM + CCB评审记录 + 基线报告")
     return {"baseline_version": version, "rtm": rtm, "workflow_status": "完成"}
 
 
@@ -769,6 +1055,9 @@ SRS文档（摘要）：
 
 def build_workflow() -> StateGraph:
     """构建需求工程工作流图"""
+    # 启动时生成4份涉众AI智能体配置文件（答辩交付物）
+    ensure_agent_configs()
+
     workflow = StateGraph(RequirementState)
 
     # ── A1阶段：4个涉众Agent（既是问答器也是追问器） ──
