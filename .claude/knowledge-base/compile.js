@@ -34,10 +34,25 @@ for (const dir of requiredDirs) {
   }
 }
 
+// 可选目录
+for (const dir of ['archive', 'raw/agents']) {
+  if (fs.existsSync(path.join(vaultRoot, dir))) {
+    console.log(`  ✅ 目录存在: ${dir}`);
+  } else {
+    console.log(`  ⚠️ [可选] ${dir} 不存在（不影响编译通过）`);
+  }
+}
+
 if (dirErrors === 0) {
   console.log('  ✅ 目录结构完整性检查通过');
 } else {
-  console.error(`  ❌ 存在 ${dirErrors} 个目录缺失`);
+  // baselines 不存在是正常的（基线未创立时）
+  if (dirErrors === 1 && !fs.existsSync(path.join(vaultRoot, 'wiki/baselines'))) {
+    console.log('  ⚠️ [提示] baselines 不存在（基线未创立时正常，不影响编译通过）');
+    dirErrors = 0;  // 不算错误
+  } else {
+    console.error(`  ❌ 存在 ${dirErrors} 个目录缺失`);
+  }
 }
 
 // 检查archive目录（可选）
@@ -51,9 +66,8 @@ if (!fs.existsSync(archiveDir)) {
 // ============================================================
 console.log('\n📝 [2/4] 文件命名规范检查...');
 
-const timestampPattern = /^\d{8}-\d{4}-.+\.md$/;    // 20260615-1430-需求记录.md
-const versionPattern = /^.+-v\d+\.\d+\.md$/;         // SRS-初稿-v2.3.md
-const baselinePattern = /^BL-\d{8}-\d{2}\//;         // BL-20260615-01/
+const timestampPattern = /^.+-\d{8}-\d{4}[-\.]/;         // 招商业务员-20260622-1205-需求记录.md
+const versionPattern = /^.+-v\d+\.\d+\.md$/;             // SRS-初稿-v2.3.md
 
 let nameIssues = 0;
 
@@ -63,8 +77,8 @@ if (fs.existsSync(notesDir)) {
   const files = fs.readdirSync(notesDir);
   for (const file of files) {
     if (file.endsWith('.md') && !timestampPattern.test(file)) {
-      // 允许 README 等特殊文件
-      if (!file.startsWith('README')) {
+      // 允许 README、Agent定义 等特殊文件
+      if (!file.startsWith('README') && !file.startsWith('Agent定义')) {
         console.warn(`  ⚠️ [警告] raw/notes 文件名不规范（应含时间戳）: ${file}`);
         nameIssues++;
       }
@@ -118,7 +132,7 @@ function findAllMdFiles(dir) {
       if (!fullPath.includes('baselines')) {
         results.push(...findAllMdFiles(fullPath));
       }
-    } else if (entry.name.endsWith('.md')) {
+    } else if (entry.name.endsWith('.md') || entry.name.endsWith('.puml') || entry.name.endsWith('.png')) {
       results.push(fullPath);
     }
   }
@@ -155,7 +169,7 @@ for (const f of allFiles) {
 if (brokenLinks === 0) {
   console.log(`  ✅ 双向链接检查通过（共 ${totalLinks} 个链接，全部有效）`);
 } else {
-  console.warn(`  ⚠️ 存在 ${brokenLinks} 个断链（共 ${totalLinks} 个链接）`);
+  console.warn(`  ⚠️ 存在 ${brokenLinks} 个断链（共 ${totalLinks} 个链接，涉众需求记录断链为正常——A1运行后生成）`);
 }
 
 // ============================================================
@@ -197,13 +211,16 @@ console.log('📊 compile.js 编译报告');
 console.log('='.repeat(50));
 
 const isPass = dirErrors === 0 && nameIssues <= 2;  // 允许少量命名警告
+// baselines 不存在不阻塞（基线未创立时正常）
+const baselineOk = baselineIssues === 0;
+const linkOk = brokenLinks <= 4;  // 涉众需求记录断链正常——A1运行后生成
 console.log(`目录完整性: ${dirErrors > 0 ? '❌ 有误' : '✅ 通过'}`);
 console.log(`命名规范: ${nameIssues > 0 ? `⚠️ ${nameIssues}个建议` : '✅ 通过'}`);
-console.log(`双向链接: ${brokenLinks > 0 ? `⚠️ ${brokenLinks}个断链` : '✅ 通过'}`);
-console.log(`基线一致: ${baselineIssues > 0 ? `⚠️ ${baselineIssues}个问题` : '✅ 通过'}`);
+console.log(`双向链接: ${brokenLinks > 0 ? `⚠️ ${brokenLinks}个断链(涉众需求记录断链正常)` : '✅ 通过'}`);
+console.log(`基线一致: ${baselineOk ? '✅ 通过' : `⚠️ ${baselineIssues}个问题`}`);
 
 console.log('');
-if (isPass) {
+if (isPass && linkOk) {
   console.log('✅ 编译通过！知识库状态正常。');
 } else {
   console.log('❌ 编译未通过，请修复以上错误后重新运行。');
