@@ -1,0 +1,324 @@
+@startuml
+|#LightBlue|库房人员|
+start
+:接收归还设备;
+:进行外观与功能检查;
+
+|#LightGray|系统|
+:记录检查结果;
+
+if (检查发现异常?) then (是)
+  |#LightBlue|库房人员|
+  :对异常部位拍照（带水印时间戳）;
+  :在系统中录入验收异常记录;
+
+  |#LightGray|系统|
+  :关联异常记录到设备档案;
+  :标记设备状态为“异常待处理”;
+
+  if (异常类型为功能性问题?) then (是)
+    :自动生成“维修单”;
+    :通知运维工程师;
+  else (否)
+    if (异常类型为配件缺失或外观轻微损伤?) then (是)
+      :标记设备为“可预锁定”;
+      :通知销售/客服团队;
+    else (否)
+      :标记设备为“不可用”;
+      :通知销售/客服团队;
+    endif
+  endif
+
+else (否)
+  |#LightGray|系统|
+  :更新设备状态为“可用”;
+  :更新库位状态;
+endif
+
+|#LightBlue|库房人员|
+:将设备归入库位;
+
+|#LightGray|系统|
+:记录入库操作;
+
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|招商业务员|
+start
+:识别紧急合同需求;
+:准备合同方案;
+
+if (客户有招投标背景或明确截止日期?) then (是)
+  :在系统中提交方案，并勾选“加签通道”;
+else (否)
+  :在系统中提交标准方案;
+endif
+
+|#LightGray|系统|
+:为合同打上“限时标识”;
+:设置审批人48小时反馈时限;
+:同步向仓库系统提交“意向锁定单”;
+
+|#LightYellow|审批人|
+:接收审批任务;
+:查看合同方案与限时标识;
+
+if (审批通过?) then (是)
+  |#LightGray|系统|
+  :更新合同状态为“已审批”;
+  :将“意向锁定单”转为正式订单;
+  :通知仓库准备出库;
+else (否)
+  if (审批人超时未反馈?) then (是)
+    |#LightGray|系统|
+    :自动升级通知到上级审批人;
+    :记录超时事件;
+  else (否)
+    |#LightGray|系统|
+    :记录审批驳回原因;
+    :通知招商业务员;
+  endif
+endif
+
+|#LightBlue|招商业务员|
+:根据审批结果进行后续操作;
+
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|库房人员|
+start
+:为新设备创建档案;
+:上传校准证书/检测报告作为必备附件;
+
+|#LightGray|系统|
+:记录校准有效期;
+:启动定时任务，监控有效期;
+
+fork
+  :每30天检查一次有效期;
+  fork again
+    if (距离有效期到期<=30天?) then (是)
+      :发送一级预警通知（库房、质量工程师）;
+    endif
+    if (距离有效期到期<=15天?) then (是)
+      :发送二级预警通知（相关负责人）;
+    endif
+    if (距离有效期到期<=7天?) then (是)
+      :发送三级预警通知（所有相关人员）;
+    endif
+  end fork
+
+|#LightBlue|库房人员|
+:收到预警，安排校准;
+
+|#LightGray|系统|
+:更新校准记录与有效期;
+
+... 出库环节 ...
+
+|#LightBlue|库房人员|
+:发起设备出库操作;
+
+|#LightGray|系统|
+:校验设备校准证书是否存在且有效;
+
+if (证书有效?) then (是)
+  :允许出库操作;
+  :更新设备状态为“已出库”;
+else (否)
+  :阻止出库操作;
+  :触发预警，提示证书缺失或过期;
+  :通知相关人员进行校准或上传证书;
+endif
+
+stop
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+participant "合同审批Controller" as ContractCtrl
+participant "合同Service" as ContractSvc
+participant "库存Service" as InventorySvc
+participant "合同Repository" as ContractRepo
+participant "库存Repository" as InventoryRepo
+
+Sales -> ContractCtrl: 提交紧急合同方案(含加签通道)
+activate ContractCtrl
+
+ContractCtrl -> ContractSvc: 创建紧急合同(contractData)
+activate ContractSvc
+
+ContractSvc -> ContractRepo: save(contractData)
+activate ContractRepo
+ContractRepo --> ContractSvc: return contract
+deactivate ContractRepo
+
+alt 客户有招投标背景
+    ContractSvc -> ContractSvc: 设置限时标识(48h)
+else
+    ContractSvc -> ContractSvc: 设置标准审批时限
+end
+
+ContractSvc -> InventorySvc: 创建意向锁定单(equipmentList)
+activate InventorySvc
+
+InventorySvc -> InventoryRepo: saveLockOrder(equipmentList)
+activate InventoryRepo
+InventoryRepo --> InventorySvc: return lockOrder
+deactivate InventoryRepo
+
+InventorySvc --> ContractSvc: return lockOrder
+deactivate InventorySvc
+
+ContractSvc --> ContractCtrl: return contract with lockOrder
+deactivate ContractSvc
+
+ContractCtrl --> Sales: 返回提交成功及锁定单信息
+deactivate ContractCtrl
+
+... 审批环节 ...
+
+actor "审批人" as Approver
+Approver -> ContractCtrl: 审批合同(contractId, approve=true)
+activate ContractCtrl
+
+ContractCtrl -> ContractSvc: approveContract(contractId)
+activate ContractSvc
+
+ContractSvc -> ContractRepo: updateStatus(contractId, "已审批")
+activate ContractRepo
+ContractRepo --> ContractSvc: success
+deactivate ContractRepo
+
+ContractSvc -> InventorySvc: convertToFormalOrder(lockOrderId)
+activate InventorySvc
+
+InventorySvc -> InventoryRepo: updateLockToFormal(lockOrderId)
+activate InventoryRepo
+InventoryRepo --> InventorySvc: success
+deactivate InventoryRepo
+
+InventorySvc --> ContractSvc: return success
+deactivate InventorySvc
+
+ContractSvc --> ContractCtrl: return success
+deactivate ContractSvc
+
+ContractCtrl --> Approver: 返回审批成功
+deactivate ContractCtrl
+
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  +设备ID: UUID [PK]
+  --
+  品牌: String
+  型号: String
+  序列号: String
+  当前状态: Enum {可用, 已出库, 维修中, 待报废, 异常待处理}
+  当前库位ID: UUID [FK]
+  创建时间: DateTime
+}
+
+table(设备档案) {
+  +档案ID: UUID [PK]
+  --
+  设备ID: UUID [FK, UK]
+  品牌: String
+  型号: String
+  序列号: String
+  账面残值: Decimal
+  创建时间: DateTime
+}
+
+table(校准记录) {
+  +校准ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  校准日期: Date
+  有效期至: Date
+  校准证书附件: Blob
+  创建时间: DateTime
+}
+
+table(库位) {
+  +库位ID: UUID [PK]
+  --
+  货架编号: String
+  区域码: String
+  当前设备ID: UUID [FK, nullable]
+}
+
+table(租赁订单) {
+  +订单ID: UUID [PK]
+  --
+  客户名称: String
+  合同编号: String
+  订单状态: Enum {审批中, 已审批, 执行中, 已结束}
+  紧急标识: Boolean
+  审批时限: Integer
+  创建时间: DateTime
+}
+
+table(意向锁定单) {
+  +锁定单ID: UUID [PK]
+  --
+  订单ID: UUID [FK]
+  设备ID: UUID [FK]
+  锁定状态: Enum {有效, 已转换, 已过期}
+  有效期限: DateTime
+  创建时间: DateTime
+}
+
+table(维修单) {
+  +维修单ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  异常记录ID: UUID [FK]
+  维修类型: Enum {维修, 报废}
+  维修费用: Decimal
+  审批状态: Enum {待审批, 审批中, 已批准, 已拒绝}
+  创建时间: DateTime
+}
+
+table(异常记录) {
+  +异常记录ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  异常类型: Enum {功能性问题, 配件缺失, 外观损伤}
+  异常描述: Text
+  证据照片: List<Blob>
+  处理状态: Enum {待处理, 处理中, 已解决}
+  创建时间: DateTime
+}
+
+' 关系定义
+设备 ||--o{ 设备档案 : "1对1"
+设备 ||--o{ 校准记录 : "1对多"
+设备 ||--o{ 异常记录 : "1对多"
+设备 ||--o{ 维修单 : "1对多"
+设备 }o--|| 库位 : "多对1"
+设备 }o--o{ 租赁订单 : "多对多" as order_equipment
+设备 }o--o{ 意向锁定单 : "多对多" as lock_equipment
+
+租赁订单 ||--o{ 意向锁定单 : "1对多"
+租赁订单 ||--o{ 异常记录 : "1对多" as order_exception
+
+异常记录 ||--o{ 维修单 : "1对多"
+
+note right of order_equipment : 通过租赁订单明细表实现
+note right of lock_equipment : 通过意向锁定单明细表实现
+
+
+@enduml

@@ -1,326 +1,326 @@
 @startuml
-|销售|
+|#LightBlue|库房人员|
 start
-:发起设备出库申请;
-|库房人员|
-:检查设备状态;
-if (设备状态为“在库”且合规?) then (是)
-  |库房人员|
-  :执行正常出库流程;
-  stop
+:接收归还设备;
+:核对附件清单;
+:检查设备外观与功能;
+
+|#LightGreen|系统|
+:记录验收开始时间;
+
+|#LightBlue|库房人员|
+if (附件是否齐全?) then (是)
+  :标记附件状态为“正常”;
 else (否)
-  :检查设备状态异常原因;
-  if (异常原因为“校准过期”?) then (是)
-    |销售|
-    :收到“设备状态异常”警告;
-    :填写“紧急关联原因”;
-    |系统|
-    :生成“高风险设备使用”工单;
-    :启动24小时倒计时;
-    fork
-      :正常计算设备使用费用;
-    fork again
-      :向财务部门生成风险预警记录;
-    end fork
-    |财务经理|
-    :审批紧急出库申请;
-    if (审批通过?) then (是)
-      |库房人员|
-      :执行特殊出库;
-      |系统|
-      :记录“非正常放行”;
-      :在合同首页添加“设备状态警告”标识;
-      note right: 边界路径：设备在24小时内归还并完成校准
-      |运维工程师|
-      :接收工单，跟进校准;
-      if (24小时内收到校准报告?) then (是)
-        :核对报告有效性;
-        :在系统内点击“解除限制”;
-        |系统|
-        :解除设备限制，合同自动解冻;
-        :将记录写入“维修知识库”;
-        stop
-      else (否)
-        |系统|
-        :自动冻结该设备的所有关联合同;
-        :生成高优先级故障单;
-        |运维工程师|
-        :远程或到场锁定设备功能;
-        stop
-      endif
-    else (否)
-      |销售|
-      :收到“出库申请被拒”通知;
-      stop
-    endif
-  else (否)
-    if (异常原因为“误标”?) then (是)
-      |库房主管|
-      :核实实物状态无误;
-      :单人纠正设备状态;
-      :执行出库;
-      stop
-    else (否)
-      :其他异常情况处理;
-      stop
-    endif
-  endif
+  :拍照留存证据;
+  :在系统中标记「附件异常」;
+  |#LightGreen|系统|
+  :自动通知销售/客服团队;
+  |#LightBlue|库房人员|
 endif
+
+if (设备是否有物理损伤或功能异常?) then (否)
+  :标记设备状态为“正常”;
+else (是)
+  :拍照记录损坏部位(带水印和时间戳);
+  :录入“验收异常记录”;
+  |#LightGreen|系统|
+  :根据预设规则判断;
+  if (维修费用 < 设备残值 * 50%?) then (是)
+    :自动生成“维修工单”;
+    :标记设备状态为“待维修”;
+  else (否)
+    :触发“报废审批流程”;
+    :标记设备状态为“待报废”;
+  endif
+  |#LightBlue|库房人员|
+endif
+
+|#LightGreen|系统|
+:生成统一的“设备归还验收单”;
+
+|#LightBlue|库房人员|
+if (设备状态为“待维修”或“待报废”?) then (是)
+  :确认设备不可用;
+  |#LightGreen|系统|
+  :禁止客户意向单锁定该设备;
+  :标记设备为“不可用”;
+else (否)
+  :确认设备状态为“在库”;
+endif
+
+|#LightBlue|库房人员|
+:完成验收流程;
+stop
 
 @enduml
 
 @startuml
-|销售|
+|#LightYellow|招商业务员|
 start
-:发起设备出库申请;
-|系统|
-:自动检测设备附件完整性;
-if (所有附件状态为“完好”?) then (是)
-  |库房人员|
-  :执行正常出库流程;
-  stop
+:获取招标公告;
+:使用“招投标关联”功能匹配设备;
+
+|#LightGreen|系统|
+:展示匹配结果;
+
+|#LightYellow|招商业务员|
+:制定租赁方案;
+if (客户是否有紧急截止日期?) then (是)
+  :为合同打上“限时标识”;
+  :提交方案并走“加签通道”;
 else (否)
-  :列出缺失/损坏附件清单;
-  :根据附件分级规则判断;
-  if (缺失附件为“关键附件”?) then (是)
-    |系统|
-    :强制阻止出库;
-    :向销售发送“附件缺失，无法出库”通知;
-    stop
-  else (否)
-    if (缺失附件为“非关键附件”?) then (是)
-      |销售|
-      :收到“附件缺失警告”;
-      :与客户沟通确认;
-      if (客户允许暂缓补全?) then (是)
-        |销售|
-        :在系统中记录“待补”;
-        |库房人员|
-        :执行出库，并在出库单上注明;
-        stop
-      else (否)
-        |销售|
-        :取消出库申请，等待补全附件;
-        stop
-      endif
+  :提交方案审批;
+endif
+
+|#LightGreen|系统|
+if (合同有“限时标识”?) then (是)
+  :强制审批人在48小时内反馈;
+else (否)
+  :进入正常审批流程;
+endif
+
+|#LightYellow|招商业务员|
+:同步提交“意向锁定单”;
+
+|#LightGreen|系统|
+:检查库存;
+if (库存充足?) then (是)
+  :标记设备为“意向锁定”;
+else (否)
+  :通知招商业务员库存不足;
+  |#LightYellow|招商业务员|
+  if (合同是否允许替代型号?) then (是)
+    :与客户协商使用替代型号;
+    if (客户同意?) then (是)
+      :更新设备清单;
+      :重新提交意向锁定;
     else (否)
-      :其他附件问题处理;
-      stop
+      :与客户协商延期或放弃;
     endif
+  else (否)
+    :与客户协商延期或放弃;
   endif
 endif
 
-@enduml
-
-@startuml
-|库房人员|
-start
-:发起设备报废申请;
-|系统|
-:将设备状态自动标记为“待报废”;
-:限制设备参与租赁、校准提醒等业务;
-|审批领导|
-:收到报废审批通知;
+|#LightGreen|系统|
 if (审批通过?) then (是)
-  |系统|
-  :将设备状态更新为“报废”;
-  :从可用库存中移除;
-  stop
+  :生成租赁合同;
+  :将招投标项目进度与合同关联;
 else (否)
-  if (审批卡住超过30天?) then (是)
-    note right: 边界路径：审批流程长期未完成
-    |系统|
-    :自动向审批领导发送催办通知;
-    :保持设备为“待报废”状态;
-    |库房人员|
-    :在盘点时手工备注“待报废”;
-    :等待审批结果;
-    stop
-  else (否)
-    |系统|
-    :保持设备为“待报废”状态;
-    |库房人员|
-    :等待审批结果;
-    stop
-  endif
+  :通知招商业务员审批驳回;
+  |#LightYellow|招商业务员|
+  :修改方案并重新提交;
 endif
+
+stop
 
 @enduml
 
 @startuml
-actor 销售
-actor 库房人员
-actor 财务经理
-actor 运维工程师
-participant "Controller: OutboundController" as Controller
-participant "Service: EquipmentService" as Service
-participant "Service: ContractService" as ContractService
-participant "Service: AlertService" as AlertService
-participant "Repository: EquipmentRepository" as EquipmentRepo
-participant "Repository: ContractRepository" as ContractRepo
+|#LightBlue|库房人员|
+start
+:接收新设备;
+:核对设备信息(品牌型号、出厂编号等);
 
-销售 -> Controller: 发起出库申请(设备ID, 合同ID)
-Controller -> Service: checkEquipmentStatus(设备ID)
-Service -> EquipmentRepo: findById(设备ID)
-EquipmentRepo --> Service: 设备实体
-Service -> Service: 判断设备状态
-alt 设备状态正常
-    Service --> Controller: 状态正常
-    Controller -> Controller: 执行正常出库逻辑
-    Controller --> 销售: 出库成功
-else 设备状态异常(校准过期)
-    Service --> Controller: 状态异常(校准过期)
-    Controller --> 销售: 返回警告信息
-    销售 -> Controller: 填写紧急关联原因
-    Controller -> Service: createEmergencyOutbound(设备ID, 合同ID, 原因)
-    Service -> AlertService: createHighRiskWorkOrder(设备ID, 原因)
-    Service -> ContractService: markContractWithWarning(合同ID)
-    Service -> Service: start24HourTimer(设备ID)
-    Service -> EquipmentRepo: save(设备实体)
-    Service --> Controller: 紧急出库单创建成功
-    Controller --> 销售: 出库申请已提交，等待审批
-    Controller --> 财务经理: 发送审批请求
-    财务经理 -> Controller: 审批通过
-    Controller -> Service: approveEmergencyOutbound(设备ID)
-    Service -> EquipmentRepo: updateStatus(设备ID, "非正常放行")
-    Service -> ContractService: calculateAndRecordFee(合同ID)
-    Service -> AlertService: sendFinancialRiskAlert(设备ID, 合同ID)
-    Service --> Controller: 审批完成
-    Controller --> 库房人员: 执行出库指令
-    库房人员 -> Controller: 出库完成确认
-    Controller -> Service: confirmOutbound(设备ID)
-    Service -> Service: 记录出库日志
-    Service --> Controller: 确认成功
-    Controller --> 销售: 设备已出库
-    loop 24小时倒计时
-        Service -> Service: 检查校准报告
-        alt 24小时内收到校准报告
-            运维工程师 -> Controller: 上传校准报告
-            Controller -> Service: verifyCalibrationReport(设备ID, 报告)
-            Service -> EquipmentRepo: updateCalibrationInfo(设备ID, 报告)
-            Service -> ContractService: unFreezeContract(合同ID)
-            Service -> AlertService: closeHighRiskWorkOrder(设备ID)
-            Service --> Controller: 设备已恢复正常
-            Controller --> 运维工程师: 解除限制成功
-        else 24小时超时
-            Service -> ContractService: freezeContract(合同ID)
-            Service -> AlertService: createHighPriorityFaultOrder(设备ID)
-            Service --> Controller: 设备已冻结
-            Controller --> 运维工程师: 生成高优先级故障单
-        end
-    end
+|#LightGreen|系统|
+if (设备信息是否完整?) then (是)
+  :创建设备档案;
+else (否)
+  :提示信息缺失，要求补充;
+  |#LightBlue|库房人员|
+  :补充缺失信息;
+endif
+
+|#LightBlue|库房人员|
+:分配库房库位;
+:完成实物与库位绑定;
+
+|#LightGreen|系统|
+:记录库位信息;
+
+|#LightBlue|库房人员|
+:上传校准证书/检测报告;
+
+|#LightGreen|系统|
+if (校准证书是否在有效期内?) then (是)
+  :记录校准有效期;
+  :设置到期前30/15/7天预警;
+else (否)
+  :标记校准状态为“异常”;
+  :触发预警通知;
+endif
+
+|#LightBlue|库房人员|
+if (设备是否有特殊状态?) then (待报废)
+  :走报废审批流程;
+  |#LightGreen|系统|
+  :标记设备状态为“报废”;
+else (正常)
+  :确认设备状态为“在库”;
+  |#LightGreen|系统|
+  :标记设备状态为“在库”;
+endif
+
+|#LightBlue|库房人员|
+:完成入库流程;
+stop
+
+@enduml
+
+@startuml
+actor "库房人员" as WH
+participant "归还验收Controller" as RC
+participant "设备Service" as ES
+participant "附件Service" as AS
+participant "通知Service" as NS
+participant "设备Repository" as ER
+participant "附件Repository" as AR
+
+WH -> RC: 提交归还验收请求(设备ID, 附件清单, 验收结果)
+activate RC
+
+RC -> ES: 获取设备信息(设备ID)
+activate ES
+ES -> ER: findById(设备ID)
+ER --> ES: 返回设备信息
+ES --> RC: 返回设备信息
+deactivate ES
+
+RC -> AS: 核对附件(设备ID, 附件清单)
+activate AS
+AS -> AR: checkAccessories(设备ID, 附件清单)
+AR --> AS: 返回核对结果
+alt 附件齐全
+  AS --> RC: 附件状态正常
+else 附件缺失或损坏
+  AS --> RC: 附件状态异常
+  RC -> NS: 发送通知(销售/客服团队, 附件异常)
+  activate NS
+  NS --> RC: 通知发送成功
+  deactivate NS
 end
+deactivate AS
+
+alt 设备正常
+  RC -> ES: 更新设备状态(设备ID, “在库”)
+  activate ES
+  ES -> ER: updateStatus(设备ID, “在库”)
+  ER --> ES: 更新成功
+  deactivate ES
+else 设备损坏
+  RC -> ES: 判断处理方式(设备ID, 损坏描述)
+  activate ES
+  alt 维修费用 < 残值50%
+    ES -> ER: updateStatus(设备ID, “待维修”)
+    ER --> ES: 更新成功
+    ES --> RC: 生成维修工单
+  else 维修费用 >= 残值50%
+    ES -> ER: updateStatus(设备ID, “待报废”)
+    ER --> ES: 更新成功
+    ES --> RC: 触发报废流程
+  end
+  deactivate ES
+end
+
+RC -> RC: 生成“设备归还验收单”
+RC --> WH: 返回验收结果及单据
+deactivate RC
 
 @enduml
 
 @startuml
 !define table(x) class x << (T,#FFAAAA) >>
 
-table(设备) {
+table(设备档案) {
   + 设备ID (PK)
   --
-  设备名称
   品牌型号
   出厂编号
   注册证号
-  设备价值
-  租赁频次
-  当前状态: 在库/出租/维修/待报废/报废
+  当前状态: 在库/出租/维修/校准/报废
   校准有效期
-  是否合规
-  创建时间
-  更新时间
+  库位ID (FK)
+}
+
+table(库位) {
+  + 库位ID (PK)
+  --
+  货架编号
+  区域码
 }
 
 table(附件) {
   + 附件ID (PK)
   --
   附件名称
-  附件条码/RFID
-  附件类型: 关键/非关键
-  当前状态: 完好/破损/缺失/待校准
-  关联设备ID (FK)
-  创建时间
-  更新时间
-}
-
-table(合同) {
-  + 合同ID (PK)
-  --
-  合同编号
-  客户ID (FK)
-  开始日期
-  结束日期
-  合同状态: 进行中/已结束/已冻结
-  设备状态警告标识: 是/否
-  创建时间
-  更新时间
-}
-
-table(合同_设备关联) {
-  + 关联ID (PK)
-  --
-  合同ID (FK)
+  规格
+  数量
+  状态: 正常/异常/待调拨
   设备ID (FK)
-  关联类型: 正常/紧急
-  紧急关联原因
-  关联时间
 }
 
-table(高风险工单) {
+table(设备归还验收单) {
+  + 验收单ID (PK)
+  --
+  设备ID (FK)
+  验收时间
+  验收结果: 正常/异常
+  附件状态: 正常/异常
+  损坏描述
+  附件异常描述
+}
+
+table(维修工单) {
   + 工单ID (PK)
   --
   设备ID (FK)
-  合同ID (FK)
-  工单类型: 校准过期/附件缺失
-  工单状态: 待处理/处理中/已完成
   创建时间
-  24小时倒计时截止时间
-  处理人ID (FK)
-  处理结果
+  维修描述
+  状态: 待处理/处理中/已完成
 }
 
-table(校准记录) {
-  + 记录ID (PK)
-  --
-  设备ID (FK)
-  校准日期
-  校准结果
-  有效期至
-  校准报告附件
-  上传人ID (FK)
-  审核人ID (FK)
-  审核状态: 待审核/已通过/已拒绝
-}
-
-table(审批记录) {
+table(报废审批) {
   + 审批ID (PK)
   --
-  关联业务类型: 报废/紧急出库
-  关联业务ID
-  审批人ID (FK)
-  审批结果: 通过/拒绝/待审批
-  审批意见
-  审批时间
-}
-
-table(设备状态变更日志) {
-  + 日志ID (PK)
-  --
   设备ID (FK)
-  变更前状态
-  变更后状态
-  变更原因
-  操作人ID (FK)
-  变更时间
+  申请时间
+  审批状态: 待审批/已批准/已拒绝
 }
 
-设备 ||--o{ 附件 : "包含"
-设备 ||--o{ 合同_设备关联 : "关联"
-合同 ||--o{ 合同_设备关联 : "关联"
-设备 ||--o{ 高风险工单 : "产生"
-设备 ||--o{ 校准记录 : "拥有"
-设备 ||--o{ 设备状态变更日志 : "记录"
-合同 ||--o{ 高风险工单 : "关联"
+table(租赁合同) {
+  + 合同ID (PK)
+  --
+  客户信息
+  租赁设备清单
+  合同状态: 审批中/已生效/已结束
+  招投标项目ID (FK)
+}
+
+table(招投标项目) {
+  + 项目ID (PK)
+  --
+  招标公告信息
+  项目进度: 投标/中标/合同签订
+  需求变更记录
+}
+
+table(意向锁定单) {
+  + 锁定单ID (PK)
+  --
+  合同ID (FK)
+  设备ID (FK)
+  锁定时间
+  状态: 有效/已释放
+}
+
+设备档案 ||--o{ 附件 : 包含
+设备档案 }o--|| 库位 : 存放于
+设备档案 ||--o{ 设备归还验收单 : 关联
+设备档案 ||--o{ 维修工单 : 触发
+设备档案 ||--o{ 报废审批 : 触发
+租赁合同 ||--o{ 意向锁定单 : 包含
+意向锁定单 }o--|| 设备档案 : 锁定
+租赁合同 }o--|| 招投标项目 : 关联
 
 @enduml

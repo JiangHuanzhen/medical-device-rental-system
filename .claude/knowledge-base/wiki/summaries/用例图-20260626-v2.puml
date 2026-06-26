@@ -1,0 +1,60 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+actor "库房人员" as WH
+actor "运维工程师" as OPS
+actor "招商业务员" as SALES
+
+rectangle "设备管理" {
+  usecase "创建设备档案" as UC1
+  usecase "管理设备状态" as UC2
+  usecase "处理校准预警" as UC3
+  usecase "记录归还异常" as UC4
+  usecase "发起维修/报废审批" as UC5
+}
+
+rectangle "租赁订单" {
+  usecase "管理招投标方案" as UC6
+  usecase "提交方案审批" as UC7
+  usecase "创建意向锁定单" as UC8
+  usecase "查看流程状态看板" as UC9
+  usecase "处理紧急合同" as UC10
+}
+
+WH --> UC1
+WH --> UC2
+WH --> UC3
+WH --> UC4
+WH --> UC5
+OPS --> UC2
+OPS --> UC3
+OPS --> UC5
+SALES --> UC6
+SALES --> UC7
+SALES --> UC8
+SALES --> UC9
+SALES --> UC10
+
+UC4 .> UC5 : <<extend>>
+UC7 .> UC8 : <<extend>>
+UC3 .> UC2 : <<include>>
+UC10 .> UC7 : <<include>>
+
+note right of UC1 : 合并BR-EQP-001，包含录入关键信息、绑定库位
+note right of UC2 : 合并BR-EQP-005/008/009，管理设备可用/不可用/待维修/待报废状态
+note right of UC3 : 合并BR-EQP-002/010，多级预警通知
+note right of UC4 : 合并BR-EQP-003/004，拍照留证、标记异常、自动通知
+note right of UC5 : 合并BR-EQP-007/009，根据阈值自动判断维修或报废
+note right of UC6 : 合并BR-ORD-001/002，版本对比、标准模板
+note right of UC7 : 合并BR-ORD-003/004，预警节点、加签通道
+note right of UC8 : 合并BR-ORD-005/006/009/010，意向锁定与异常状态联动
+note right of UC9 : 对应BR-ORD-008，实时进度展示
+note right of UC10 : 对应BR-ORD-007，预开票+风险承诺机制
+
+note "库房人员和运维工程师\n共享设备状态管理职责" as N1
+note "招商业务员是订单流程\n的主要发起者" as N2
+@enduml
+```
+@enduml

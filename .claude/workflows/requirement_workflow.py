@@ -1434,15 +1434,33 @@ SRS文档（完整）：
 
     result = call_llm(prompt, system_prompt="你是严谨的需求验证审计师。你的职责是「对照证据源找出差异」，不创造内容、不做主观猜测。进行涉众对话比对时，执行语义等价判断而非关键词匹配。每个发现必须引用证据来源（REQ编号或涉众原话）。")
     data = extract_json(result)
-    verdict_raw = data.get("verdict", "修改后重新验证（分析类问题→回A2）")
     findings = data.get("findings", [])
-    # 兼容新旧 verdict 格式
-    if "通过" in verdict_raw and "修改" not in verdict_raw:
+    # ── 从 findings 统计数据推算 verdict，不再信 LLM 的结论字符串 ──
+    acq_count = 0    # 获取类：历史遗漏 + 对话偏差
+    ana_count = 0    # 分析类：文档矛盾 + 内部不一致
+    acq_blocker = 0
+    ana_blocker = 0
+    for f in findings:
+        sev = f.get("severity", "")
+        is_blocker = sev == "阻塞性" or sev == "严重"
+        ftype = f.get("type", "")
+        if ftype in ("历史遗漏", "对话偏差"):
+            acq_count += 1
+            if is_blocker:
+                acq_blocker += 1
+        elif ftype in ("文档矛盾", "内部不一致"):
+            ana_count += 1
+            if is_blocker:
+                ana_blocker += 1
+    if acq_count == 0 and ana_count == 0:
         verdict = "通过"
-    elif "获取" in verdict_raw or "获取类" in verdict_raw:
-        verdict = "获取类问题"
+    elif acq_blocker > 0:
+        verdict = "获取类问题"      # 获取类有阻塞 → 上游优先
+    elif acq_count >= ana_count:
+        verdict = "获取类问题"      # 获取类数量占优
     else:
         verdict = "分析类问题"
+    fire_progress(f"  → verdict 由数据推算：获取类{acq_count}个(阻塞{acq_blocker}) / 分析类{ana_count}个(阻塞{ana_blocker}) → {verdict}")
     rollback_reason = {
         "通过": "",
         "获取类问题": "A5_acquisition",

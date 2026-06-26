@@ -1,130 +1,92 @@
 @startuml
 ```plantuml
 @startuml
-left to right direction
-skinparam packageStyle rectangle
-skinparam actorStyle awesome
+' 设备租赁管理系统 - 用例图
 
-' ===== 第一步：涉众 → Actor 映射 =====
-' 库房人员 → 库房操作员（直接操作设备入库、出库、附件管理）
-' 运维工程师 → 运维工程师（直接操作设备状态、校准管理、工单处理）
-' 财务经理 → 财务审批人（审批特殊出库、查看风险记录）
-' 销售 → 销售代表（发起出库申请、关联合同）
-' 设备管理负责人 → 设备管理负责人（审批特殊出库、解除限制）
-' 质控部门 → 质控审核员（审核高风险工单）
+' ===== 第四步：Actor 定义 =====
+actor "库房人员" as Warehouse
+actor "招商业务员" as Sales
+actor "运维工程师" as Maintenance
+actor "质量工程师" as Quality
+actor "销售/客服" as Support
 
-actor "库房操作员" as warehouse
-actor "运维工程师" as ops
-actor "财务审批人" as finance
-actor "销售代表" as sales
-actor "设备管理负责人" as manager
-actor "质控审核员" as qc
+' ===== 第四步：用例定义 =====
 
-' ===== 第二步：从需求中提取用例 =====
-' 核心用例合并说明：
-' 1. BR-EQP-001/009/010/011/012/013/014 合并为"特殊出库管理"——核心流程相同：异常状态→审批→放行→补正
-' 2. BR-EQP-002/003/004/005 合并为"附件全生命周期管理"——核心流程相同：建档→绑定→校验→出库
-' 3. BR-EQP-007 独立为"设备报废审批管理"——业务流程独立
-' 4. BR-EQP-008 独立为"设备档案信息校验"——业务流程独立
-' 5. BR-EQP-006 独立为"设备二维码管理"——增值服务用例
-' 6. BR-EQP-015/016/017 合并为"退租结算与设备回收"——核心流程相同：退租→结算→回收
+' --- 设备管理 ---
+usecase (UC1: 设备档案管理\n(含入库、库位绑定、\n附件清单维护)) as UC1
+usecase (UC2: 设备状态管理\n(含多级状态设置\n与异常标记)) as UC2
+usecase (UC3: 校准预警管理\n(含有效期管理与\n多级通知)) as UC3
+usecase (UC4: 设备归还验收\n(含附件核对、异常记录、\n报告生成)) as UC4
+usecase (UC5: 设备损坏处理\n(含拍照取证、\n自动判定维修/报废)) as UC5
 
-usecase "设备入库管理" as UC1
-usecase "设备出库管理" as UC2
-usecase "特殊出库管理" as UC3
-usecase "附件全生命周期管理" as UC4
-usecase "设备报废审批管理" as UC5
-usecase "设备档案信息校验" as UC6
-usecase "设备二维码管理" as UC7
-usecase "退租结算与设备回收" as UC8
-usecase "校准管理" as UC9
-usecase "高风险工单处理" as UC10
-usecase "设备状态变更管理" as UC11
+' --- 租赁订单 ---
+usecase (UC6: 招投标关联管理\n(含匹配、进度追踪、\n版本对比)) as UC6
+usecase (UC7: 租赁合同管理\n(含模板、变更条款、\n限时审批)) as UC7
+usecase (UC8: 意向锁定单管理\n(含库存预占与\n异常状态拦截)) as UC8
 
-' ===== 第三步：建立关系 =====
-' Actor与用例关联
-warehouse --> UC1
-warehouse --> UC2
-warehouse --> UC4
-warehouse --> UC5
-warehouse --> UC6
-warehouse --> UC7
-warehouse --> UC11
+' ===== 第二步：Actor 与用例关联 =====
 
-ops --> UC3
-ops --> UC9
-ops --> UC10
-ops --> UC8
-ops --> UC11
+' 库房人员
+Warehouse --> UC1 : 建立设备档案\n绑定库位\n维护附件清单
+Warehouse --> UC2 : 设置设备状态\n(在库/出租/维修等)
+Warehouse --> UC4 : 执行归还验收\n核对附件\n生成验收单
+Warehouse --> UC5 : 记录损坏情况\n拍照取证
 
-finance --> UC3
-finance --> UC8
+' 招商业务员
+Sales --> UC6 : 匹配招标公告\n追踪项目进度\n对比版本变更
+Sales --> UC7 : 创建合同\n应用模板\n发起限时审批
+Sales --> UC8 : 提交意向锁定单\n(审批同步)
 
-sales --> UC2
-sales --> UC3
+' 运维工程师
+Maintenance --> UC2 : 标记设备状态\n(不可用/待维修)
+Maintenance --> UC5 : 执行维修/报废\n判定流程
 
-manager --> UC3
-manager --> UC5
-manager --> UC11
+' 质量工程师
+Quality --> UC3 : 管理校准有效期\n接收预警通知
 
-qc --> UC10
+' 销售/客服
+Support --> UC4 : 接收附件异常\n通知并处理
+
+' ===== 第三步：用例关系 =====
 
 ' <<include>> 关系
-' 设备出库必然包含附件校验
-UC2 --> UC4 : <<include>>
-' 特殊出库必然包含高风险工单创建
-UC3 --> UC10 : <<include>>
-' 退租结算必然包含设备状态变更
-UC8 --> UC11 : <<include>>
+UC1 .> UC2 : <<include>>\n(设备档案建立后\n必须设置初始状态)
+UC7 .> UC8 : <<include>>\n(合同审批发起时\n自动提交锁定单)
 
 ' <<extend>> 关系
-' 设备入库时，如果信息不一致则扩展档案校验
-UC1 --> UC6 : <<extend>>
-' 设备出库时，如果状态异常则扩展特殊出库流程
-UC2 --> UC3 : <<extend>>
-' 校准管理超时后，扩展为高风险工单
-UC9 --> UC10 : <<extend>>
+UC4 ..> UC5 : <<extend>>\n(验收发现损坏时\n触发损坏处理)
+UC7 ..> UC6 : <<extend>>\n(招投标项目合同\n可关联招标背景)
 
-' ===== 第四步：附加注解 =====
-note right of warehouse
-  Actor映射说明：
-  库房人员 → 库房操作员
-  （直接操作系统执行入库、
-  出库、附件管理等操作）
+' ===== 第四步：注解 =====
+
+note right of Warehouse
+  **Actor映射决策**:
+  1. 库房人员 → 设备管理核心操作者
+  2. 招商业务员 → 订单/合同发起者
+  3. 运维工程师 → 设备状态维护者
+  4. 质量工程师 → 校准管理专有角色
+  5. 销售/客服 → 异常通知接收方
 end note
 
-note right of ops
-  Actor映射说明：
-  运维工程师 → 运维工程师
-  （直接操作系统执行校准管理、
-  工单处理、设备状态变更等操作）
+note right of UC1
+  **用例合并理由**:
+  设备入库、库位绑定、附件维护
+  均属于设备档案建立的完整流程，
+  合并为UC1避免碎片化。
 end note
 
-note right of finance
-  Actor映射说明：
-  财务经理 → 财务审批人
-  （审批特殊出库、查看风险记录）
+note right of UC4
+  **用例拆分理由**:
+  归还验收(UC4)与损坏处理(UC5)
+  业务流程不同：验收是标准流程，
+  损坏处理是异常分支，故拆分。
 end note
 
-note top of UC3
-  用例合并说明：
-  BR-EQP-001/009/010/011/012/013/014
-  合并为"特殊出库管理"
-  核心流程相同：异常状态→审批→放行→补正
-end note
-
-note top of UC4
-  用例合并说明：
-  BR-EQP-002/003/004/005
-  合并为"附件全生命周期管理"
-  核心流程相同：建档→绑定→校验→出库
-end note
-
-note top of UC8
-  用例合并说明：
-  BR-EQP-015/016/017
-  合并为"退租结算与设备回收"
-  核心流程相同：退租→结算→回收
+note right of UC7
+  **用例合并理由**:
+  合同模板、变更条款、限时审批
+  均属于合同管理的完整生命周期，
+  合并为UC7保持业务完整性。
 end note
 
 @enduml
