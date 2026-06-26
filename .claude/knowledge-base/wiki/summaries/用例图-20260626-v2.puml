@@ -1,0 +1,58 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+actor "库房人员" as WH
+actor "运维工程师" as OPS
+actor "系统管理员" as ADMIN
+actor "库房主管" as WHM
+actor "总监" as DIR
+
+rectangle "设备管理系统" {
+  usecase "UC1: 设备出库" as UC1
+  usecase "UC2: 设备归还" as UC2
+  usecase "UC3: 管理设备状态" as UC3
+  usecase "UC4: 管理证书预警" as UC4
+  usecase "UC5: 紧急出库审批" as UC5
+  usecase "UC6: 管理附件" as UC6
+  usecase "UC7: 配置预警参数" as UC7
+  usecase "UC8: 查看变更日志" as UC8
+  usecase "UC9: 填写归还检查记录" as UC9
+  usecase "UC10: 手动标记需维修" as UC10
+}
+
+' Actor 与用例关联
+WH --> UC1
+WH --> UC2
+WH --> UC6
+OPS --> UC2
+OPS --> UC9
+OPS --> UC10
+WHM --> UC5
+DIR --> UC5
+ADMIN --> UC7
+ADMIN --> UC8
+WH --> UC3
+OPS --> UC3
+
+' include 关系
+UC1 ..> UC6 : <<include>>
+UC1 ..> UC4 : <<include>>
+UC2 ..> UC9 : <<include>>
+
+' extend 关系
+UC1 ..> UC5 : <<extend>>
+UC9 ..> UC10 : <<extend>>
+
+note right of UC1 : 出库时自动核对设备状态和证书有效期\n若证书过期则阻止出库
+note right of UC5 : 当证书过期设备需要紧急出库时触发\n需主管或总监审批
+note right of UC9 : 运维工程师填写检测数据\n系统自动判定设备状态
+note right of UC10 : 当自动检测无法覆盖异常时\n运维工程师手动标记并填写原因
+note right of UC4 : 证书到期前30天黄色预警\n到期前7天红色预警
+note right of UC7 : 支持按设备类别分别设定预警天数
+note right of UC3 : 设备状态包括：在库、出租、维修、校准、报废\n以及归还后的过渡子状态
+}
+@enduml
+```
+@enduml

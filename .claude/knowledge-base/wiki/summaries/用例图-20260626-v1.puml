@@ -1,0 +1,98 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+
+' Actor definitions
+actor "库房人员" as Warehouse
+actor "运维工程师" as Maintenance
+actor "招商业务员" as Sales
+actor "系统" as System
+
+' Use cases
+usecase (UC1: 管理设备出库合规检查) as UC1
+usecase (UC2: 管理设备校准预警) as UC2
+usecase (UC3: 管理设备归还状态判定) as UC3
+usecase (UC4: 管理紧急特批出库) as UC4
+usecase (UC5: 管理设备出库状态确认) as UC5
+usecase (UC6: 管理备件库存锁定与释放) as UC6
+usecase (UC7: 管理库存差异处理与追溯) as UC7
+usecase (UC8: 管理备件安全库存预警) as UC8
+usecase (UC9: 管理合同变更) as UC9
+usecase (UC10: 管理紧急出库预约) as UC10
+usecase (UC11: 管理签约信息自动同步) as UC11
+usecase (UC12: 管理出库前双人复核) as UC12
+
+' Relationships
+Warehouse --> UC1
+Warehouse --> UC2
+Warehouse --> UC3
+Warehouse --> UC5
+Maintenance --> UC3
+Maintenance --> UC4
+Maintenance --> UC6
+Maintenance --> UC7
+Maintenance --> UC8
+Sales --> UC9
+Sales --> UC10
+Sales --> UC11
+Sales --> UC12
+
+' Include relationships
+UC1 .> (验证证书有效期) : <<include>>
+UC1 .> (检查附件完整性) : <<include>>
+UC9 .> (验证变更次数限制) : <<include>>
+UC10 .> (验证紧急需求真伪) : <<include>>
+
+' Extend relationships
+UC4 .> UC1 : <<extend>>\n(当证书过期时)
+UC2 .> UC1 : <<extend>>\n(当证书即将到期时)
+UC3 .> (生成库存差异单) : <<extend>>\n(当盘点差异时)
+UC9 .> (触发上级审批) : <<extend>>\n(当变更超限时)
+
+' Notes
+note right of Warehouse
+  库房人员映射为Actor：
+  - 直接操作设备出库、入库、盘点
+  - 关注证书合规与附件管理
+end note
+
+note right of Maintenance
+  运维工程师映射为Actor：
+  - 负责设备维修、备件管理
+  - 处理紧急特批出库流程
+end note
+
+note right of Sales
+  招商业务员映射为Actor：
+  - 管理合同变更与紧急预约
+  - 触发信息同步与复核流程
+end note
+
+note top of UC1
+  合并说明：
+  - BR-EQP-001（证书过期阻止出库）
+  - BR-EQP-006（出库状态确认）
+  - BR-EQP-010（附件扫描比对）
+  合并为设备出库合规检查用例
+end note
+
+note top of UC3
+  合并说明：
+  - BR-EQP-003（归还状态标记）
+  - BR-EQP-005（自动判定需维修）
+  - BR-EQP-012（待补件子标记）
+  合并为设备归还状态判定用例
+end note
+
+note top of UC9
+  合并说明：
+  - BR-ORD-001（合同变更单）
+  - BR-ORD-003（变更次数限制）
+  - BR-ORD-004（紧急预约不计入次数）
+  合并为合同变更管理用例
+end note
+
+@enduml
+```
+@enduml

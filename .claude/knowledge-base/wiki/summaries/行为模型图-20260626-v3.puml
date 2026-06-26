@@ -1,0 +1,330 @@
+@startuml
+|#LightBlue|库房人员|
+start
+:扫描设备出库;
+|#LightGreen|系统|
+:读取设备信息及证书有效期;
+:校验设备状态是否为“在库”?;
+if (设备状态为“在库”?) then (是)
+  :校验校准/检测证书有效期;
+  if (证书在有效期内?) then (是)
+    |#LightBlue|库房人员|
+    :执行正常出库流程;
+    stop
+  else (否)
+    |#LightBlue|库房人员|
+    :通知客户证书过期;
+    if (客户确认紧急需求?) then (是)
+      :启动“特殊放行审批”流程;
+      |#LightGreen|系统|
+      :生成《特殊放行审批单》;
+      :推送审批待办至库房主管;
+    else (否)
+      :终止出库;
+      stop
+    endif
+  endif
+else (否)
+  |#LightBlue|库房人员|
+  :提示设备状态异常，无法出库;
+  stop
+endif
+
+|#LightYellow|库房主管|
+:初审《特殊放行审批单》;
+if (初审通过?) then (是)
+  |#LightCyan|运维负责人|
+  :技术合规复核;
+  if (技术合规?) then (是)
+    |#LightPink|总监|
+    :最终决策;
+    if (最终批准?) then (是)
+      |#LightGreen|系统|
+      :标记设备为“特殊状态出库”;
+      :记录审批日志及风险警告;
+      |#LightBlue|库房人员|
+      :执行紧急出库;
+      stop
+    else (否)
+      :驳回申请，流程结束;
+      stop
+    endif
+  else (否)
+    :驳回申请，流程结束;
+    stop
+  endif
+else (否)
+  :驳回申请，流程结束;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|运维工程师|
+start
+:接收归还设备;
+:进行设备检查;
+:填写《归还检查维修记录》;
+|#LightGreen|系统|
+:读取检查记录数据;
+fork
+  :判定设备主体状态;
+  if (主体有故障/损坏?) then (是)
+    :生成“已归还-需维修”过渡标签;
+    :自动创建维修工单;
+  else (否)
+    :生成“已归还-待入库”过渡标签;
+  endif
+fork again
+  :判定附件状态;
+  if (附件缺失?) then (是)
+    :记录“附件缺失”独立标签;
+    :触发备件补充申请;
+  else (否)
+    :记录“附件完整”标签;
+  endif
+end fork
+:组合生成复合状态标签;
+:将判定结果推送至财务待办列表;
+|#LightPink|财务人员|
+:人工复核设备状态及检查记录;
+if (复核通过?) then (是)
+  :触发押金退还流程;
+  stop
+else (否)
+  :标记异常，发起争议处理流程;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|招商业务员|
+start
+:收到客户变更请求;
+if (变更类型为“紧急出库预约”?) then (是)
+  |#LightGreen|系统|
+  :执行紧急出库预约流程;
+  :不计入合同变更次数;
+  stop
+else (否)
+  :发起合同变更单;
+  |#LightGreen|系统|
+  :检查合同在24小时内变更次数;
+  if (变更次数 < 3?) then (是)
+    :强制要求填写变更原因;
+    :联动更新租金、维保等关联字段;
+    :保存变更单;
+    stop
+  else (否)
+    :提示“变更次数超限，需上级审批”;
+    |#LightYellow|上级主管|
+    :审批变更单;
+    if (审批通过?) then (是)
+      |#LightGreen|系统|
+      :强制要求填写变更原因;
+      :联动更新租金、维保等关联字段;
+      :保存变更单;
+      stop
+    else (否)
+      :驳回变更请求;
+      stop
+    endif
+  endif
+endif
+
+@enduml
+
+@startuml
+actor "运维工程师" as Operator
+participant "归还界面" as UI
+participant "归还Controller" as Controller
+participant "设备Service" as Service
+participant "状态判定Service" as JudgeService
+participant "工单Service" as WorkOrderService
+participant "备件Service" as PartService
+participant "通知Service" as NotifyService
+database "数据库" as DB
+
+Operator -> UI: 提交《归还检查维修记录》
+UI -> Controller: submitReturnCheckRecord(record)
+Controller -> Service: processReturnCheck(recordId)
+Service -> DB: getReturnCheckRecord(recordId)
+DB --> Service: return recordData
+Service -> JudgeService: judgeEquipmentStatus(recordData)
+activate JudgeService
+
+alt 主体有故障
+    JudgeService --> Service: status = "需维修"
+    Service -> WorkOrderService: createMaintenanceWorkOrder(equipmentId, recordId)
+    WorkOrderService -> DB: saveWorkOrder()
+    DB --> WorkOrderService: workOrderCreated
+    WorkOrderService --> Service: return workOrderId
+else 主体无故障
+    JudgeService --> Service: status = "待入库"
+end
+
+JudgeService -> JudgeService: judgeAccessoryStatus(recordData)
+alt 附件缺失
+    JudgeService --> Service: accessoryStatus = "缺失"
+    Service -> PartService: createPartReplenishmentRequest(equipmentId, recordId)
+    PartService -> DB: saveRequest()
+    DB --> PartService: requestCreated
+    PartService --> Service: return requestId
+else 附件完整
+    JudgeService --> Service: accessoryStatus = "完整"
+end
+deactivate JudgeService
+
+Service -> DB: updateEquipmentStatus(equipmentId, status, accessoryStatus)
+DB --> Service: statusUpdated
+Service -> NotifyService: notifyFinanceForReview(equipmentId, recordId)
+NotifyService -> DB: saveNotification()
+DB --> NotifyService: notificationSaved
+NotifyService --> Service: notificationSent
+Service --> Controller: return result
+Controller --> UI: 显示判定结果及待办通知
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID (PK)
+  --
+  设备名称
+  设备型号
+  序列号
+  设备类别
+  风险等级
+  主体状态: 在库/出租/维修/校准/报废
+  过渡标签: 已归还-待入库/已归还-需维修
+}
+
+table(设备附件) {
+  + 附件ID (PK)
+  --
+  附件名称
+  附件类型
+  当前状态: 完整/缺失
+  设备ID (FK)
+}
+
+table(校准证书) {
+  + 证书ID (PK)
+  --
+  证书编号
+  设备ID (FK)
+  有效期
+  预警天数
+  当前状态: 有效/过期/维修中
+}
+
+table(预警配置) {
+  + 配置ID (PK)
+  --
+  设备类别
+  风险等级
+  默认预警天数
+  自定义预警天数
+  最后修改人
+  最后修改时间
+}
+
+table(变更日志) {
+  + 日志ID (PK)
+  --
+  配置ID (FK)
+  操作人
+  操作时间
+  变更原因
+  变更前值
+  变更后值
+}
+
+table(租赁合同) {
+  + 合同ID (PK)
+  --
+  合同编号
+  客户ID (FK)
+  签约日期
+  合同状态: 已签约/变更中/已结束
+}
+
+table(合同变更单) {
+  + 变更单ID (PK)
+  --
+  合同ID (FK)
+  变更原因
+  变更次数(24h内)
+  变更状态: 待审批/已批准/已驳回
+  创建人
+  创建时间
+}
+
+table(设备清单) {
+  + 清单ID (PK)
+  --
+  合同ID (FK)
+  设备ID (FK)
+  租金方案
+  维保责任
+}
+
+table(特殊放行审批单) {
+  + 审批单ID (PK)
+  --
+  设备ID (FK)
+  合同ID (FK)
+  发起人: 运维工程师
+  初审人: 库房主管
+  技术复核人: 运维负责人
+  最终审批人: 总监
+  审批状态: 待初审/待技术复核/待终审/已批准/已驳回
+  风险警告
+}
+
+table(归还检查维修记录) {
+  + 记录ID (PK)
+  --
+  设备ID (FK)
+  运维工程师
+  检查日期
+  主体状态判定: 正常/故障
+  附件状态判定: 完整/缺失
+  维修工单ID (FK)
+  备件申请ID (FK)
+}
+
+table(维修工单) {
+  + 工单ID (PK)
+  --
+  设备ID (FK)
+  创建时间
+  状态
+}
+
+table(备件补充申请) {
+  + 申请ID (PK)
+  --
+  设备ID (FK)
+  缺失附件列表
+  状态
+}
+
+设备 ||--o{ 设备附件 : 包含
+设备 ||--o{ 校准证书 : 拥有
+设备 ||--o{ 特殊放行审批单 : 关联
+设备 ||--o{ 归还检查维修记录 : 关联
+设备 ||--o{ 维修工单 : 关联
+设备 ||--o{ 备件补充申请 : 关联
+预警配置 ||--o{ 变更日志 : 记录
+租赁合同 ||--o{ 合同变更单 : 包含
+租赁合同 ||--o{ 设备清单 : 包含
+设备清单 }o--|| 设备 : 引用
+归还检查维修记录 ||--o| 维修工单 : 触发
+归还检查维修记录 ||--o| 备件补充申请 : 触发
+
+@enduml

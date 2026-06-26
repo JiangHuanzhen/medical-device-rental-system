@@ -1,0 +1,232 @@
+@startuml
+|库房人员|
+start
+:扫描设备条码，发起归还验收;
+|#LightBlue|运维工程师|
+:执行设备主体检测;
+:执行附件核验;
+fork
+  :记录主体检测结果;
+fork again
+  :记录附件核验结果;
+end fork
+|#LightBlue|系统|
+:收集检测与核验数据;
+if (主体是否有故障?) then ([是])
+  :判定主状态为“维修”;
+  :生成维修工单;
+  if (附件是否缺失?) then ([是])
+    :标记“附件缺失”;
+    :生成备件补充申请;
+  else ([否])
+    :无附件问题;
+  endif
+else ([否])
+  if (附件是否缺失?) then ([是])
+    :标记“附件缺失”;
+    :生成备件补充申请;
+    :判定主状态为“在库”;
+  else ([否])
+    :判定主状态为“在库”;
+  endif
+endif
+:更新设备状态及标记;
+|库房人员|
+:确认验收完成;
+stop
+
+@enduml
+
+@startuml
+|库房人员|
+start
+:扫描设备条码，发起出库申请;
+|#LightBlue|系统|
+:校验设备状态是否为“在库”?;
+if (状态为“在库”?) then ([是])
+  :校验证书有效期;
+  if (证书在有效期内?) then ([是])
+    :允许出库;
+    :更新设备状态为“出租”;
+    |库房人员|
+    :完成出库;
+    stop
+  else ([否])
+    :触发“证书过期”拦截;
+    :提示“证书已过期，无法出库”;
+  endif
+else ([否])
+  :触发“状态异常”拦截;
+  :提示“设备非在库状态，无法出库”;
+endif
+|库房人员|
+:发起“紧急出库”特批申请;
+|#LightBlue|系统|
+:生成《设备状态异常出库声明》;
+:发送审批请求至总监及运维负责人;
+|总监|
+if (审批通过?) then ([是])
+  |运维负责人|
+  if (双签通过?) then ([是])
+    |#LightBlue|系统|
+    :记录风险声明及审批记录;
+    :强制允许出库;
+    :更新设备状态为“出租”;
+    |库房人员|
+    :完成紧急出库;
+    stop
+  else ([否])
+    :流程终止;
+    stop
+  endif
+else ([否])
+  :流程终止;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|系统|
+start
+:定时任务触发，扫描所有设备;
+:获取设备类别及其校准预警天数;
+:计算每个设备证书到期日与当前日期的差值;
+if (差值 <= 预警天数?) then ([是])
+  :生成“校准预警”通知;
+  :发送通知给运维工程师;
+else ([否])
+  :无操作;
+  stop
+endif
+|运维工程师|
+:接收预警通知;
+:查看设备详情及证书信息;
+if (是否需要立即校准?) then ([是])
+  :发起校准申请;
+  |#LightBlue|系统|
+  :更新设备状态为“校准”;
+  :生成校准工单;
+  |运维工程师|
+  :执行校准流程;
+  :更新校准证书信息;
+  |#LightBlue|系统|
+  :更新设备状态回“在库”;
+  stop
+else ([否])
+  :标记为“暂不处理”;
+  :设置下次提醒时间;
+  stop
+endif
+
+@enduml
+
+@startuml
+actor 库房人员 as WH
+participant "归还验收界面" as UI
+participant "归还验收Controller" as Controller
+participant "设备Service" as Service
+participant "设备Repository" as Repository
+participant "工单Repository" as WO_Repo
+
+WH -> UI: 扫描设备条码
+UI -> Controller: submitReturnInspection(deviceCode)
+Controller -> Service: inspectDevice(deviceCode)
+Service -> Repository: findDeviceByCode(deviceCode)
+Repository --> Service: device
+Service -> Service: performMainBodyCheck(device)
+Service -> Service: performAccessoryCheck(device)
+
+alt 主体有故障
+  Service -> Service: setMainStatus("维修")
+  Service -> WO_Repo: createRepairWorkOrder(device)
+  alt 附件有缺失
+    Service -> Service: setAccessoryMissingFlag(true)
+    Service -> WO_Repo: createSparePartRequest(device)
+  else 附件无缺失
+    Service -> Service: setAccessoryMissingFlag(false)
+  end
+else 主体无故障
+  Service -> Service: setMainStatus("在库")
+  alt 附件有缺失
+    Service -> Service: setAccessoryMissingFlag(true)
+    Service -> WO_Repo: createSparePartRequest(device)
+  else 附件无缺失
+    Service -> Service: setAccessoryMissingFlag(false)
+  end
+end
+
+Service -> Repository: updateDevice(device)
+Repository --> Service: success
+Service --> Controller: returnInspectionResult(result)
+Controller --> UI: displayResult(result)
+UI --> WH: 显示验收结果
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID : UUID <<PK>>
+  --
+  设备编码 : VARCHAR(50) <<UK>>
+  设备名称 : VARCHAR(100)
+  设备类别ID : UUID <<FK>>
+  当前主状态 : ENUM(在库, 出租, 维修, 校准, 报废)
+  附件缺失标记 : BOOLEAN
+  当前过渡标签 : ENUM(已归还-待入库, 已归还-需维修)
+}
+
+table(设备类别) {
+  + 类别ID : UUID <<PK>>
+  --
+  类别名称 : VARCHAR(100)
+  校准预警天数 : INT
+}
+
+table(校准证书) {
+  + 证书ID : UUID <<PK>>
+  --
+  设备ID : UUID <<FK>>
+  证书编号 : VARCHAR(50)
+  有效期至 : DATE
+}
+
+table(归还检查记录) {
+  + 记录ID : UUID <<PK>>
+  --
+  设备ID : UUID <<FK>>
+  检查时间 : DATETIME
+  主体检测结果 : TEXT
+  附件核验结果 : TEXT
+  检查人ID : UUID <<FK>>
+}
+
+table(维修工单) {
+  + 工单ID : UUID <<PK>>
+  --
+  设备ID : UUID <<FK>>
+  工单类型 : ENUM(主体维修, 备件补充)
+  创建时间 : DATETIME
+  状态 : ENUM(待处理, 处理中, 已完成)
+}
+
+table(紧急出库申请) {
+  + 申请ID : UUID <<PK>>
+  --
+  设备ID : UUID <<FK>>
+  申请原因 : TEXT
+  风险声明 : TEXT
+  审批状态 : ENUM(待审批, 已通过, 已拒绝)
+  总监审批人ID : UUID <<FK>>
+  运维负责人审批人ID : UUID <<FK>>
+}
+
+设备 }o-d- 设备类别 : "属于"
+设备 ||--o{ 校准证书 : "持有"
+设备 ||--o{ 归还检查记录 : "关联"
+设备 ||--o{ 维修工单 : "关联"
+设备 ||--o{ 紧急出库申请 : "关联"
+
+@enduml

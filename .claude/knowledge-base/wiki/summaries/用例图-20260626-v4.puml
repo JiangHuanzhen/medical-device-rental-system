@@ -1,0 +1,85 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ============================================
+' Actor 定义
+' ============================================
+actor "库房人员" as WH
+actor "运维工程师" as OE
+actor "招商业务员" as BM
+actor "管理员" as ADM
+
+' ============================================
+' 用例定义
+' ============================================
+rectangle "设备管理" {
+  
+  ' --- 核心用例 ---
+  usecase (UC1) as "设备出库校验"  ' BR-EQP-001, BR-EQP-004
+  usecase (UC2) as "设备归还验收"  ' BR-EQP-002, BR-EQP-005, BR-EQP-006, BR-EQP-007, BR-EQP-008
+  usecase (UC3) as "设备状态管理"  ' BR-EQP-003
+  usecase (UC4) as "紧急出库审批"  ' BR-EQP-004
+  usecase (UC5) as "附件缺失处理"  ' BR-EQP-006, BR-EQP-010, BR-EQP-012
+  usecase (UC6) as "设备主体故障处理" ' BR-EQP-005, BR-EQP-012
+  usecase (UC7) as "校准预警配置"  ' BR-EQP-009
+  usecase (UC8) as "补件申请管理"  ' BR-EQP-010
+  usecase (UC9) as "设备归还状态自动判定" ' BR-EQP-005, BR-EQP-008
+  usecase (UC10) as "设备证书校验" ' BR-EQP-001, BR-EQP-004
+  
+  ' --- include 关系 ---
+  UC1 --> UC10 : <<include>>
+  UC2 --> UC9 : <<include>>
+  
+  ' --- extend 关系 ---
+  UC1 <.. UC4 : <<extend>>
+  UC2 <.. UC5 : <<extend>>
+  UC2 <.. UC6 : <<extend>>
+  
+  ' --- 扩展点 ---
+  note right of UC1 : 扩展点：证书过期时触发紧急出库流程
+  note right of UC2 : 扩展点：附件缺失或主体故障时触发独立处理流程
+}
+
+' ============================================
+' Actor 与用例关联
+' ============================================
+WH --> UC1  ' 库房人员执行出库校验
+WH --> UC2  ' 库房人员执行归还验收
+WH --> UC3  ' 库房人员管理设备状态
+WH --> UC5  ' 库房人员处理附件缺失
+WH --> UC8  ' 库房人员发起补件申请
+
+OE --> UC2  ' 运维工程师参与归还验收
+OE --> UC3  ' 运维工程师管理设备状态
+OE --> UC6  ' 运维工程师处理主体故障
+OE --> UC9  ' 运维工程师触发自动判定
+
+BM --> UC2  ' 招商业务员参与归还验收（责任区分）
+BM --> UC5  ' 招商业务员关注附件缺失处理
+
+ADM --> UC4  ' 管理员审批紧急出库
+ADM --> UC7  ' 管理员配置校准预警
+
+' ============================================
+' 注解：Actor 映射决策
+' ============================================
+note top of WH : 映射自「库房人员」涉众，\n负责日常设备出入库操作
+note top of OE : 映射自「运维工程师」涉众，\n负责设备技术状态判定
+note top of BM : 映射自「招商业务员」涉众，\n关注责任区分和费用核算
+note top of ADM : 映射自「运维工程师」涉众，\n但特指具有审批权限的角色
+
+' ============================================
+' 注解：用例合并/拆分理由
+' ============================================
+note left of UC1 : 合并 BR-EQP-001 和 BR-EQP-004，\n因为出库校验是核心流程，\n紧急出库是其扩展场景
+note left of UC2 : 合并 BR-EQP-002,005,006,007,008，\n因为归还验收是统一入口，\n附件缺失和主体故障是扩展分支
+note left of UC5 : 合并 BR-EQP-006,010,012，\n因为附件缺失处理流程一致，\n包括标记、提醒、生成补件申请
+note left of UC6 : 合并 BR-EQP-005,012，\n因为主体故障处理流程一致，\n包括自动判定和生成维修工单
+
+@enduml
+```
+@enduml

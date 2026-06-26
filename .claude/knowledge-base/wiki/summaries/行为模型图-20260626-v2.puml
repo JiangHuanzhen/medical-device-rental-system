@@ -1,0 +1,289 @@
+@startuml
+|#LightBlue|运维工程师|
+start
+:接收归还设备;
+:执行归还检查并填写《归还检查维修记录》;
+|#LightGray|系统|
+:接收检查记录;
+fork
+  :解析检测数据;
+  fork again
+  :解析附件清单;
+end fork
+:执行状态判定逻辑;
+if (所有核心检测项均通过?) then (是)
+  if (附件清单是否完整?) then (是)
+    :生成“已归还-待入库”标记;
+    note right: 前置子状态
+  else (否)
+    :生成“已归还-待入库”标记;
+    :生成“附件缺失”标记;
+    note right: 分离管理
+  endif
+else (否)
+  if (检测失败原因是否为“附件缺失”且“设备主体损坏”?) then (是)
+    :生成“已归还-需维修”标记;
+    :生成“附件缺失(关联维修工单)”标记;
+    note right: 联动管理
+  else (否)
+    :生成“已归还-需维修”标记;
+  endif
+endif
+if (是否存在“其他异常”或“需人工复核”字段?) then (是)
+  |#LightBlue|运维工程师|
+  :手动选择“需维修”标记;
+  :强制填写原因备注;
+  |#LightGray|系统|
+  :关联到后续维修流程;
+else (否)
+endif
+|#LightBlue|运维工程师|
+:将设备移交至库房;
+|#LightGray|系统|
+:更新设备主状态为“在库”或“维修”;
+:清除“已归还-*”前置子状态;
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|库房人员|
+start
+:扫描设备编码;
+|#LightGray|系统|
+:查询设备状态及证书信息;
+if (设备状态是否为“在库”?) then (是)
+  if (校准/检测证书是否在有效期内?) then (是)
+    |#LightBlue|库房人员|
+    :强制扫描并记录每个附件的唯一编码;
+    |#LightGray|系统|
+    :生成附有双方电子签名的出库附件清单;
+    :更新设备状态为“出租”;
+    stop
+  else (否)
+    :触发红色预警;
+    :阻止出库;
+    if (是否发起紧急出库特批?) then (是)
+      |#LightBlue|库房人员|
+      :发起特批申请;
+      |#LightGray|系统|
+      :通知主管/总监审批;
+      |#LightYellow|主管/总监|
+      if (审批是否通过?) then (是)
+        :填写《设备状态异常出库声明》;
+        |#LightGray|系统|
+        :记录审批详情及声明;
+        :标记设备为“特殊状态出库”;
+        :设置严格追责时限;
+        |#LightBlue|库房人员|
+        :强制扫描并记录每个附件的唯一编码;
+        :生成附有双方电子签名的出库附件清单;
+        stop
+      else (否)
+        |#LightGray|系统|
+        :记录审批拒绝;
+        stop
+      endif
+    else (否)
+      stop
+    endif
+  endif
+else (否)
+  :触发拦截;
+  :提示设备状态异常;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightYellow|管理员|
+start
+:登录系统;
+:进入“预警规则配置”模块;
+|#LightGray|系统|
+:显示当前预警规则列表;
+|#LightYellow|管理员|
+if (是否需要按设备类别配置?) then (是)
+  :选择特定设备类别;
+  :修改该类别的预警天数;
+else (否)
+  :修改全局默认预警天数;
+endif
+:提交配置;
+|#LightGray|系统|
+if (配置参数是否合法?) then (是)
+  :记录变更日志(时间、操作人、原因);
+  :更新预警规则;
+  :提示“配置成功”;
+  stop
+else (否)
+  :提示“参数不合法，请重新输入”;
+  |#LightYellow|管理员|
+  :重新输入;
+  |#LightGray|系统|
+  :再次校验;
+  if (校验通过?) then (是)
+    :记录变更日志;
+    :更新预警规则;
+    :提示“配置成功”;
+    stop
+  else (否)
+    :提示“配置失败，请联系技术支持”;
+    stop
+  endif
+endif
+
+@enduml
+
+@startuml
+actor "运维工程师" as Operator
+participant "归还检查界面" as UI
+participant "归还检查Controller" as Controller
+participant "设备状态判定Service" as Service
+participant "设备Repository" as DeviceRepo
+participant "附件Repository" as AccessoryRepo
+
+Operator -> UI: 提交《归还检查维修记录》
+UI -> Controller: submitReturnCheck(recordData)
+Controller -> Service: evaluateDeviceStatus(recordData)
+activate Service
+
+Service -> Service: parseCheckData(recordData)
+Service -> Service: parseAccessoryList(recordData)
+
+alt 所有检测项通过
+    Service -> DeviceRepo: queryDeviceStatus(deviceId)
+    DeviceRepo --> Service: return "出租"
+    Service -> AccessoryRepo: queryAccessoryList(deviceId)
+    AccessoryRepo --> Service: return accessoryList
+
+    alt 附件清单完整
+        Service -> Service: determineStatus("已归还-待入库")
+        Service -> DeviceRepo: updateDeviceStatus(deviceId, "已归还-待入库")
+        DeviceRepo --> Service: success
+        Service --> Controller: return "已归还-待入库"
+        Controller --> UI: display "设备状态：已归还-待入库"
+    else 附件清单不完整
+        Service -> Service: determineStatus("已归还-待入库", "附件缺失")
+        Service -> DeviceRepo: updateDeviceStatus(deviceId, "已归还-待入库")
+        Service -> AccessoryRepo: markAccessoryMissing(deviceId, missingList)
+        DeviceRepo --> Service: success
+        AccessoryRepo --> Service: success
+        Service --> Controller: return "已归还-待入库(附件缺失)"
+        Controller --> UI: display "设备状态：已归还-待入库，附件缺失"
+    end
+else 检测项未通过
+    Service -> Service: determineStatus("已归还-需维修")
+    Service -> DeviceRepo: updateDeviceStatus(deviceId, "已归还-需维修")
+    DeviceRepo --> Service: success
+    Service --> Controller: return "已归还-需维修"
+    Controller --> UI: display "设备状态：已归还-需维修"
+end
+deactivate Service
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID (PK)
+  --
+  设备名称
+  设备型号
+  设备类别
+  当前状态: 在库/出租/维修/校准/报废
+  特殊状态标记: 特殊状态出库/附件缺失/待补件
+}
+
+table(校准证书) {
+  + 证书ID (PK)
+  --
+  设备ID (FK)
+  证书编号
+  有效期至
+  证书文件
+}
+
+table(附件) {
+  + 附件ID (PK)
+  --
+  设备ID (FK)
+  附件名称
+  唯一编码
+  当前状态: 正常/缺失
+}
+
+table(出库记录) {
+  + 出库记录ID (PK)
+  --
+  设备ID (FK)
+  出库时间
+  操作人
+  客户签名
+  出库类型: 正常/特殊状态
+}
+
+table(出库附件清单) {
+  + 清单ID (PK)
+  --
+  出库记录ID (FK)
+  附件ID (FK)
+}
+
+table(归还检查维修记录) {
+  + 记录ID (PK)
+  --
+  设备ID (FK)
+  检查时间
+  运维工程师
+  检测数据(JSON)
+  附件缺失列表
+  是否需人工复核
+  复核备注
+}
+
+table(特殊放行审批单) {
+  + 审批单ID (PK)
+  --
+  设备ID (FK)
+  发起人
+  审批人
+  审批时间
+  审批结果
+  设备状态异常出库声明
+  追责时限
+}
+
+table(预警规则配置) {
+  + 配置ID (PK)
+  --
+  设备类别
+  黄色预警天数
+  红色预警天数
+  最后修改人
+  最后修改时间
+}
+
+table(变更日志) {
+  + 日志ID (PK)
+  --
+  配置ID (FK)
+  变更时间
+  操作人
+  变更原因
+  变更前内容
+  变更后内容
+}
+
+设备 ||--o{ 校准证书 : 拥有
+设备 ||--o{ 附件 : 包含
+设备 ||--o{ 出库记录 : 产生
+设备 ||--o{ 归还检查维修记录 : 关联
+设备 ||--o{ 特殊放行审批单 : 关联
+出库记录 ||--o{ 出库附件清单 : 包含
+附件 ||--o{ 出库附件清单 : 记录
+预警规则配置 ||--o{ 变更日志 : 记录
+
+@enduml

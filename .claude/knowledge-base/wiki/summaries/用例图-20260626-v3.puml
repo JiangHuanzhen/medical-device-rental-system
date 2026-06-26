@@ -1,0 +1,114 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ============================================
+' 第一步：涉众 → Actor 映射
+' ============================================
+actor "库房人员" as WarehouseStaff
+actor "运维工程师" as MaintenanceEngineer
+actor "招商业务员" as SalesRep
+actor "财务人员" as FinanceStaff
+actor "库房主管" as WarehouseManager
+actor "运维负责人" as MaintenanceManager
+actor "总监" as Director
+
+' ============================================
+' 第二步：用例提取与合并/拆分
+' ============================================
+rectangle "设备管理" {
+  ' 合并 BR-EQP-001, BR-EQP-002, BR-EQP-009, BR-EQP-011 → 出库校验与特批
+  usecase "UC1: 执行设备出库校验" as UC1
+  usecase "UC2: 发起紧急出库特批" as UC2
+  usecase "UC3: 审批紧急出库特批" as UC3
+  
+  ' 合并 BR-EQP-003, BR-EQP-004, BR-EQP-007, BR-EQP-008, BR-EQP-010, BR-EQP-012 → 归还验收
+  usecase "UC4: 执行设备归还验收" as UC4
+  
+  ' 合并 BR-EQP-005, BR-EQP-006, BR-EQP-014, BR-EQP-015 → 校准管理
+  usecase "UC5: 管理校准预警配置" as UC5
+  usecase "UC6: 接收校准提醒" as UC6
+  
+  ' BR-EQP-013 → 押金复核
+  usecase "UC7: 复核押金退还" as UC7
+}
+
+rectangle "租赁订单" {
+  ' 合并 BR-ORD-001, BR-ORD-003, BR-ORD-005 → 合同变更
+  usecase "UC8: 发起合同变更" as UC8
+  
+  ' BR-ORD-002 → 流程固化
+  usecase "UC9: 执行标准租赁流程" as UC9
+  
+  ' BR-ORD-004 → 信息同步
+  usecase "UC10: 同步签约信息" as UC10
+  
+  ' BR-ORD-006 → 紧急判断
+  usecase "UC11: 判断紧急出库等级" as UC11
+}
+
+' ============================================
+' 第三步：建立关系
+' ============================================
+
+' Actor 与用例关联
+WarehouseStaff --> UC1
+WarehouseStaff --> UC4
+WarehouseStaff --> UC6
+
+MaintenanceEngineer --> UC2
+MaintenanceEngineer --> UC4
+
+SalesRep --> UC8
+SalesRep --> UC9
+
+FinanceStaff --> UC7
+
+WarehouseManager --> UC3
+MaintenanceManager --> UC3
+Director --> UC3
+
+' <<include>> 关系
+UC1 .> UC11 : <<include>>
+UC9 .> UC10 : <<include>>
+
+' <<extend>> 关系
+UC8 ..> UC2 : <<extend>>
+UC4 ..> UC7 : <<extend>>
+
+' ============================================
+' 第四步：附加注解
+' ============================================
+note right of WarehouseStaff
+  **Actor映射决策**
+  库房人员→库房人员：直接操作出库/入库
+  运维工程师→运维工程师：技术判定角色
+  招商业务员→招商业务员：合同管理角色
+  财务人员→财务人员：资金安全角色
+  库房主管/运维负责人/总监→审批角色
+end note
+
+note right of UC1
+  **用例合并理由**
+  BR-EQP-001（自动校验）和BR-EQP-002（特批通道）
+  是同一业务流程的两个分支，合并为UC1
+end note
+
+note right of UC4
+  **用例合并理由**
+  BR-EQP-003/004/007/008/010/012均围绕
+  “归还验收”这一核心业务活动，合并为UC4
+end note
+
+note right of UC8
+  **用例拆分理由**
+  合同变更（BR-ORD-001/003/005）与标准租赁流程
+  （BR-ORD-002）业务流程不同，拆分为独立用例
+end note
+
+@enduml
+```
+@enduml
