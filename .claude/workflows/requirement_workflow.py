@@ -1680,7 +1680,7 @@ def ccb_review(state: RequirementState) -> dict:
 def ccb_decide_next(state: RequirementState) -> Literal["approve", "rollback_a1", "rollback_a2"]:
     """CCB条件判断 — 人工审批不受全局迭代限制（人说不通过就必须回退）"""
     verdict = state.get("ccb_verdict", "不通过(分析类)")
-    if "通过" in verdict:
+    if verdict == "通过":
         print("  [CCB] [OK] 审批通过 → 基线创立")
         return "approve"
     elif "获取" in verdict:

@@ -1,0 +1,268 @@
+---
+title: UML行为模型-BL-20260626-01
+tags: [UML 基线]
+---
+
+@startuml
+|业务员|
+start
+:发起紧急出库申请;
+:填写紧急放行单;
+note right: 注明客户紧急需求\n及简化检查原因
+
+|库房主管|
+:审核紧急放行单;
+if (审批通过?) then (是)
+  :签署确认;
+else (否)
+  :驳回申请;
+  stop
+endif
+
+|业务主管|
+:审批紧急放行单;
+if (审批通过?) then (是)
+  :签署确认;
+else (否)
+  :驳回申请;
+  stop
+endif
+
+|库房人员|
+:执行简化检查;
+note right: 外观、核心附件、通电自检
+if (检查通过?) then (是)
+  :设备出库;
+  :业务员签字确认;
+else (否)
+  :记录故障，\n终止出库;
+  stop
+endif
+
+|系统|
+:记录紧急出库日志;
+:触发事后补录提醒;
+stop
+
+@enduml
+
+@startuml
+|库房人员|
+start
+:接收归还设备;
+:执行设备检查;
+if (设备状态正常?) then (是)
+  :标记设备为\n“已归还-待结算”;
+else (异常)
+  :记录损坏/缺失;\n启动索赔流程;
+  stop
+endif
+
+|系统|
+:自动触发财务核算;
+fork
+  :计算租金应收;
+fork again
+  :计算押金应退差额;
+fork again
+  :计算违约金;
+fork again
+  :核对剩余折旧;
+end fork
+:生成预结算单;
+
+|财务人员|
+:查看预结算单;
+if (数据无误?) then (是)
+  :手动点击\n“确认结算”;
+else (否)
+  :修改数据;\n重新核算;
+  note right: 修改后系统自动重新计算
+  :手动点击\n“确认结算”;
+endif
+
+|系统|
+:更新设备状态为\n“在库”;
+:更新财务账目;
+stop
+
+@enduml
+
+@startuml
+|运维工程师|
+start
+:识别紧急故障;
+:手动登记临时台账;
+note right: 工号、设备编号、\n预估价值
+
+|系统|
+:记录临时台账;
+:启动2小时补录计时;
+
+|运维工程师|
+:领用备件;
+:执行现场维修;
+:维修完成;
+
+if (2小时内完成补录?) then (是)
+  :扫描设备条码;
+  :完成正式出库记录;
+else (否)
+  :触发超时警告;
+  if (超时超过1次?) then (是)
+    :冻结领用权限;
+    :通知主管;
+    stop
+  else (否)
+    :记录违规一次;
+    :强制要求补录;
+    :扫描设备条码;
+    :完成正式出库记录;
+  endif
+endif
+
+|系统|
+:更新库存数据;
+:关闭临时台账;
+stop
+
+@enduml
+
+@startuml
+actor "库房人员" as WH
+actor "财务人员" as FIN
+participant "Controller" as CTRL
+participant "Service" as SVC
+participant "Repository" as REPO
+
+WH -> CTRL: 提交设备归还请求
+CTRL -> SVC: processReturn(deviceId)
+SVC -> REPO: findDeviceById(deviceId)
+REPO --> SVC: device
+SVC -> REPO: updateDeviceStatus(deviceId, "RETURN_PENDING_SETTLEMENT")
+REPO --> SVC: success
+SVC -> REPO: createSettlementTask(deviceId)
+REPO --> SVC: taskId
+SVC --> CTRL: returnTaskId
+CTRL --> WH: 显示“已归还-待结算”状态
+
+alt 自动核算
+  SVC -> SVC: calculateRent(deviceId)
+  SVC -> SVC: calculateDeposit(deviceId)
+  SVC -> SVC: calculatePenalty(deviceId)
+  SVC -> SVC: calculateDepreciation(deviceId)
+  SVC -> REPO: savePreSettlementData(deviceId, data)
+  REPO --> SVC: success
+end
+
+FIN -> CTRL: 请求查看预结算单
+CTRL -> SVC: getPreSettlementData(deviceId)
+SVC -> REPO: findPreSettlementByDeviceId(deviceId)
+REPO --> SVC: preSettlementData
+SVC --> CTRL: preSettlementData
+CTRL --> FIN: 显示预结算数据
+
+FIN -> CTRL: 点击“确认结算”
+CTRL -> SVC: confirmSettlement(deviceId)
+SVC -> REPO: updateDeviceStatus(deviceId, "IN_STOCK")
+REPO --> SVC: success
+SVC -> REPO: updateFinancialRecords(deviceId)
+REPO --> SVC: success
+SVC --> CTRL: settlementConfirmed
+CTRL --> FIN: 显示“在库”状态
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+!define primary_key(x) <u>x</u>
+!define foreign_key(x) <i><color:blue>x</color></i>
+
+table(设备) {
+  + primary_key(设备ID) : UUID
+  设备型号 : VARCHAR(50)
+  设备名称 : VARCHAR(100)
+  当前状态 : ENUM(在库, 租赁中, 维修中, 已归还-待结算, 报废)
+  注册证号 : VARCHAR(50)
+  附件配置 : TEXT
+  折旧年限 : INT
+  单价 : DECIMAL(10,2)
+}
+
+table(合同) {
+  + primary_key(合同ID) : UUID
+  合同编号 : VARCHAR(50)
+  客户ID : UUID
+  设备ID : UUID
+  租赁开始日期 : DATE
+  租赁结束日期 : DATE
+  租金标准 : DECIMAL(10,2)
+  押金金额 : DECIMAL(10,2)
+  合同状态 : ENUM(待签署, 执行中, 已结束, 已终止)
+}
+
+table(出库单) {
+  + primary_key(出库单ID) : UUID
+  合同ID : UUID
+  设备ID : UUID
+  出库类型 : ENUM(常规, 紧急)
+  出库时间 : DATETIME
+  操作人ID : UUID
+  审批人ID : UUID
+  检查清单 : TEXT
+  状态 : ENUM(待出库, 已出库, 已取消)
+}
+
+table(紧急放行单) {
+  + primary_key(放行单ID) : UUID
+  出库单ID : UUID
+  申请原因 : TEXT
+  业务员ID : UUID
+  库房主管审批 : BOOLEAN
+  业务主管审批 : BOOLEAN
+  责任归属 : TEXT
+  创建时间 : DATETIME
+}
+
+table(归还记录) {
+  + primary_key(归还记录ID) : UUID
+  合同ID : UUID
+  设备ID : UUID
+  归还时间 : DATETIME
+  操作人ID : UUID
+  设备状态 : TEXT
+  状态 : ENUM(已归还-待结算, 财务待审核, 在库)
+}
+
+table(结算单) {
+  + primary_key(结算单ID) : UUID
+  归还记录ID : UUID
+  租金应收 : DECIMAL(10,2)
+  押金应退差额 : DECIMAL(10,2)
+  违约金 : DECIMAL(10,2)
+  剩余折旧 : DECIMAL(10,2)
+  结算总额 : DECIMAL(10,2)
+  财务人员ID : UUID
+  结算时间 : DATETIME
+  状态 : ENUM(待审核, 已确认)
+}
+
+table(临时台账) {
+  + primary_key(台账ID) : UUID
+  领用人ID : UUID
+  设备ID : UUID
+  预估价值 : DECIMAL(10,2)
+  领用时间 : DATETIME
+  补录时限 : DATETIME
+  是否超时 : BOOLEAN
+  状态 : ENUM(待补录, 已完成)
+}
+
+设备 ||--o{ 合同 : "1对多"
+合同 ||--o{ 出库单 : "1对多"
+出库单 ||--o{ 紧急放行单 : "1对1"
+合同 ||--o{ 归还记录 : "1对多"
+归还记录 ||--o{ 结算单 : "1对1"
+设备 ||--o{ 临时台账 : "1对多"
+
+@enduml

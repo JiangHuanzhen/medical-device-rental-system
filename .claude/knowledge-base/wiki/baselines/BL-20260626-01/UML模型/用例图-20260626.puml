@@ -1,0 +1,111 @@
+---
+title: UML用例图-BL-20260626-01
+tags: [UML 基线]
+aliases: ["用例图-BL-20260626-01"]
+---
+
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ============================================
+' 第一步：涉众 → Actor 映射
+' ============================================
+actor "库房人员" as WarehouseStaff
+actor "财务人员" as FinanceStaff
+actor "运维工程师" as MaintenanceEngineer
+actor "招商业务员" as BusinessStaff
+actor "库房主管" as WarehouseManager
+actor "业务主管" as BusinessManager
+
+' ============================================
+' 第二步：从需求中提取用例
+' ============================================
+rectangle "设备管理" {
+  ' --- 核心用例 ---
+  usecase "常规出库" as UC_RegularOutbound
+  usecase "紧急出库" as UC_EmergencyOutbound
+  usecase "设备归还处理" as UC_ReturnHandling
+  usecase "财务结算确认" as UC_FinancialSettlement
+  usecase "紧急放行单审批" as UC_EmergencyReleaseApproval
+  usecase "紧急备件领用" as UC_EmergencyPartsPickup
+  usecase "紧急报修响应" as UC_EmergencyRepairResponse
+  usecase "设备状态查询" as UC_DeviceStatusQuery
+
+  ' --- 包含用例 ---
+  usecase "核对设备型号与合同" as UC_VerifyModel
+  usecase "执行出库检查" as UC_PerformChecklist
+
+  ' --- 扩展用例 ---
+  usecase "事后补录" as UC_PostRecording
+  usecase "简化检查流程" as UC_SimplifiedCheck
+}
+
+' ============================================
+' 第三步：建立关系
+' ============================================
+
+' Actor与用例关联
+WarehouseStaff --> UC_RegularOutbound
+WarehouseStaff --> UC_EmergencyOutbound
+WarehouseStaff --> UC_ReturnHandling
+WarehouseStaff --> UC_DeviceStatusQuery
+
+FinanceStaff --> UC_FinancialSettlement
+FinanceStaff --> UC_DeviceStatusQuery
+
+MaintenanceEngineer --> UC_EmergencyPartsPickup
+MaintenanceEngineer --> UC_EmergencyRepairResponse
+MaintenanceEngineer --> UC_DeviceStatusQuery
+
+BusinessStaff --> UC_EmergencyOutbound
+BusinessStaff --> UC_DeviceStatusQuery
+
+WarehouseManager --> UC_EmergencyReleaseApproval
+BusinessManager --> UC_EmergencyReleaseApproval
+
+' <<include>> 关系
+UC_RegularOutbound ..> UC_VerifyModel : <<include>>
+UC_RegularOutbound ..> UC_PerformChecklist : <<include>>
+UC_EmergencyOutbound ..> UC_VerifyModel : <<include>>
+
+' <<extend>> 关系
+UC_EmergencyOutbound ..> UC_SimplifiedCheck : <<extend>>
+UC_EmergencyPartsPickup ..> UC_PostRecording : <<extend>>
+
+' ============================================
+' 第四步：附加注解
+' ============================================
+note top of WarehouseStaff
+  **Actor映射决策**
+  库房人员：执行出库操作的核心角色
+  财务人员：负责结算审核
+  运维工程师：负责紧急维修和备件领用
+  招商业务员：发起紧急出库申请
+  库房主管/业务主管：审批紧急放行单
+end note
+
+note right of UC_RegularOutbound
+  **用例合并理由**
+  常规出库包含型号核对和检查清单执行，
+  合并为一个完整业务流程
+end note
+
+note right of UC_EmergencyOutbound
+  **用例拆分理由**
+  紧急出库与常规出库业务流程不同，
+  涉及审批和简化检查，故拆分为独立用例
+end note
+
+note right of UC_ReturnHandling
+  **用例合并理由**
+  设备归还后涉及库房和财务多个步骤，
+  合并为统一的归还处理流程
+end note
+
+@enduml
+```
+@enduml
