@@ -1,0 +1,132 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ===== 第一步：涉众 → Actor 映射 =====
+' 库房人员 → 库房操作员（直接操作设备入库、出库、附件管理）
+' 运维工程师 → 运维工程师（直接操作设备状态、校准管理、工单处理）
+' 财务经理 → 财务审批人（审批特殊出库、查看风险记录）
+' 销售 → 销售代表（发起出库申请、关联合同）
+' 设备管理负责人 → 设备管理负责人（审批特殊出库、解除限制）
+' 质控部门 → 质控审核员（审核高风险工单）
+
+actor "库房操作员" as warehouse
+actor "运维工程师" as ops
+actor "财务审批人" as finance
+actor "销售代表" as sales
+actor "设备管理负责人" as manager
+actor "质控审核员" as qc
+
+' ===== 第二步：从需求中提取用例 =====
+' 核心用例合并说明：
+' 1. BR-EQP-001/009/010/011/012/013/014 合并为"特殊出库管理"——核心流程相同：异常状态→审批→放行→补正
+' 2. BR-EQP-002/003/004/005 合并为"附件全生命周期管理"——核心流程相同：建档→绑定→校验→出库
+' 3. BR-EQP-007 独立为"设备报废审批管理"——业务流程独立
+' 4. BR-EQP-008 独立为"设备档案信息校验"——业务流程独立
+' 5. BR-EQP-006 独立为"设备二维码管理"——增值服务用例
+' 6. BR-EQP-015/016/017 合并为"退租结算与设备回收"——核心流程相同：退租→结算→回收
+
+usecase "设备入库管理" as UC1
+usecase "设备出库管理" as UC2
+usecase "特殊出库管理" as UC3
+usecase "附件全生命周期管理" as UC4
+usecase "设备报废审批管理" as UC5
+usecase "设备档案信息校验" as UC6
+usecase "设备二维码管理" as UC7
+usecase "退租结算与设备回收" as UC8
+usecase "校准管理" as UC9
+usecase "高风险工单处理" as UC10
+usecase "设备状态变更管理" as UC11
+
+' ===== 第三步：建立关系 =====
+' Actor与用例关联
+warehouse --> UC1
+warehouse --> UC2
+warehouse --> UC4
+warehouse --> UC5
+warehouse --> UC6
+warehouse --> UC7
+warehouse --> UC11
+
+ops --> UC3
+ops --> UC9
+ops --> UC10
+ops --> UC8
+ops --> UC11
+
+finance --> UC3
+finance --> UC8
+
+sales --> UC2
+sales --> UC3
+
+manager --> UC3
+manager --> UC5
+manager --> UC11
+
+qc --> UC10
+
+' <<include>> 关系
+' 设备出库必然包含附件校验
+UC2 --> UC4 : <<include>>
+' 特殊出库必然包含高风险工单创建
+UC3 --> UC10 : <<include>>
+' 退租结算必然包含设备状态变更
+UC8 --> UC11 : <<include>>
+
+' <<extend>> 关系
+' 设备入库时，如果信息不一致则扩展档案校验
+UC1 --> UC6 : <<extend>>
+' 设备出库时，如果状态异常则扩展特殊出库流程
+UC2 --> UC3 : <<extend>>
+' 校准管理超时后，扩展为高风险工单
+UC9 --> UC10 : <<extend>>
+
+' ===== 第四步：附加注解 =====
+note right of warehouse
+  Actor映射说明：
+  库房人员 → 库房操作员
+  （直接操作系统执行入库、
+  出库、附件管理等操作）
+end note
+
+note right of ops
+  Actor映射说明：
+  运维工程师 → 运维工程师
+  （直接操作系统执行校准管理、
+  工单处理、设备状态变更等操作）
+end note
+
+note right of finance
+  Actor映射说明：
+  财务经理 → 财务审批人
+  （审批特殊出库、查看风险记录）
+end note
+
+note top of UC3
+  用例合并说明：
+  BR-EQP-001/009/010/011/012/013/014
+  合并为"特殊出库管理"
+  核心流程相同：异常状态→审批→放行→补正
+end note
+
+note top of UC4
+  用例合并说明：
+  BR-EQP-002/003/004/005
+  合并为"附件全生命周期管理"
+  核心流程相同：建档→绑定→校验→出库
+end note
+
+note top of UC8
+  用例合并说明：
+  BR-EQP-015/016/017
+  合并为"退租结算与设备回收"
+  核心流程相同：退租→结算→回收
+end note
+
+@enduml
+```
+@enduml

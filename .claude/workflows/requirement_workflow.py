@@ -1394,6 +1394,7 @@ def a5_validate_srs(state: RequirementState) -> dict:
     run_stop_checks()
     fire_phase("A5_验证")
     fire_progress("[SEARCH] A5: 正在执行交叉验证...")
+    ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
     prompt = f"""你正在对医疗器械租赁管理系统的SRS初稿进行交叉验证。
 
 ## 输入文件
