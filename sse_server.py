@@ -30,6 +30,9 @@ from requirement_workflow import (
     set_pause_requested,
     set_resume_signal,
     set_stop_requested,
+    STOP_REQUESTED,
+    PAUSE_REQUESTED,
+    RESUME_SIGNAL,
     fire_progress,
     MAX_GLOBAL_ITERATIONS,
     WorkflowStopped,
@@ -114,6 +117,7 @@ def _run_workflow():
             "iteration_count": 0,
             "workflow_status": "启动",
             "force_forward": False,
+            "doc_versions": {"req_list": 1, "issues": 1, "uml": 1, "srs": 1, "validation": 1, "defect": 1},
             "a1_review_verdict": "",
             "a1_review_comment": "",
             "a3_review_verdict": "",
@@ -187,6 +191,10 @@ async def start_workflow():
     global _wf_running, _wf_error
     if _wf_running:
         return JSONResponse({"ok": False, "error": "workflow already running"})
+    # 清除上次运行残留的停止/暂停信号
+    STOP_REQUESTED.clear()
+    PAUSE_REQUESTED.clear()
+    RESUME_SIGNAL.set()
     _wf_running = True
     _wf_error = ""
     _wf_done_event.clear()
@@ -228,6 +236,29 @@ async def stop_workflow():
     return JSONResponse({"ok": True})
 
 
+@app.post("/cleanup")
+async def cleanup_outputs():
+    """删除上一次工作流的所有产物"""
+    import shutil
+    _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    dirs_to_clean = [
+        os.path.join(_PROJECT_ROOT, ".claude", "knowledge-base", "raw", "notes"),
+        os.path.join(_PROJECT_ROOT, ".claude", "knowledge-base", "wiki", "summaries"),
+        os.path.join(_PROJECT_ROOT, ".claude", "workflows", "__pycache__"),
+        os.path.join(_PROJECT_ROOT, ".claude", "worktrees"),
+    ]
+    cleaned = []
+    for d in dirs_to_clean:
+        if os.path.exists(d):
+            try:
+                shutil.rmtree(d)
+                cleaned.append(d)
+            except Exception as e:
+                _on_progress(f"cleanup failed: {d} — {e}")
+    _on_progress(f"cleaned {len(cleaned)} dirs from previous run")
+    return JSONResponse({"ok": True, "cleaned": len(cleaned)})
+
+
 @app.get("/status")
 async def get_status():
     return JSONResponse({
@@ -250,7 +281,7 @@ HTML_PAGE = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Medical Device Rental - Requirements Workflow</title>
+<title>医疗器械租赁管理系统 - 需求工程工作流</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f7fa;color:#333}
@@ -313,59 +344,68 @@ header span{font-size:13px;opacity:.9}
 <body>
 
 <header>
-  <div><h1>Medical Device Rental Management System</h1><span>Requirements Engineering Workflow - with review checkpoints</span></div>
+  <div><h1>医疗器械租赁管理系统</h1><span>需求工程工作流 - 含审批检查点</span></div>
   <div>
-    <span id="iterationBadge" class="iteration-badge" style="display:none">Round 1</span>
-    <span id="statusBadge" class="status-badge status-running" style="display:none">Pending</span>
+    <span id="iterationBadge" class="iteration-badge" style="display:none">第1轮</span>
+    <span id="statusBadge" class="status-badge status-running" style="display:none">等待中</span>
   </div>
 </header>
 
 <div class="container">
   <div class="sidebar">
     <div class="card">
-      <h3>Progress</h3>
+      <h3>📊 进度</h3>
       <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
       <div class="steps" id="steps">
-        <div class="step" data-phase="A1_对话"><span class="dot"></span>A1: Stakeholder Dialog</div>
-        <div class="step" data-phase="A1_汇总"><span class="dot"></span>A1: Consolidate</div>
-        <div class="step" data-phase="A2_分析"><span class="dot"></span>A2: Quality Analysis</div>
-        <div class="step" data-phase="A3_UML"><span class="dot"></span>A3: UML Modeling</div>
-        <div class="step" data-phase="A4_SRS"><span class="dot"></span>A4: SRS Generation</div>
-        <div class="step" data-phase="A5_验证"><span class="dot"></span>A5: Validation</div>
-        <div class="step" data-phase="A5_缺陷报告"><span class="dot"></span>A5: Defect Reports</div>
-        <div class="step" data-phase="CCB_审批"><span class="dot"></span>CCB: Pending Approval</div>
-        <div class="step" data-phase="A6_基线"><span class="dot"></span>A6: Baseline</div>
-        <div class="step" data-phase="A7_ADR"><span class="dot"></span>A7: ADR</div>
-        <div class="step" data-phase="_done"><span class="dot"></span>Done</div>
+        <div class="step" data-phase="A1_对话"><span class="dot"></span>A1: 涉众对话</div>
+        <div class="step" data-phase="A1_汇总"><span class="dot"></span>A1: 汇总</div>
+        <div class="step" data-phase="A2_分析"><span class="dot"></span>A2: 需求质量分析</div>
+        <div class="step" data-phase="A3_UML"><span class="dot"></span>A3: UML建模</div>
+        <div class="step" data-phase="A4_SRS"><span class="dot"></span>A4: SRS生成</div>
+        <div class="step" data-phase="A5_验证"><span class="dot"></span>A5: 需求验证</div>
+        <div class="step" data-phase="A5_缺陷报告"><span class="dot"></span>A5: 缺陷分析报告</div>
+        <div class="step" data-phase="CCB_审批"><span class="dot"></span>CCB: 待审批</div>
+        <div class="step" data-phase="A6_基线"><span class="dot"></span>A6: 基线创立</div>
+        <div class="step" data-phase="_done"><span class="dot"></span>完成</div>
       </div>
     </div>
 
     <div class="card">
-      <button id="startBtn" class="btn btn-primary" style="width:100%;margin-bottom:8px">Run Full Workflow</button>
+      <button id="startBtn" class="btn btn-primary" style="width:100%;margin-bottom:8px">清除上次产物并运行全流程</button>
       <div style="display:flex;gap:6px;margin-bottom:10px">
-        <button id="pauseBtn" class="btn btn-warning" style="display:none;flex:1" disabled>Pause</button>
-        <button id="resumeBtn" class="btn btn-success" style="display:none;flex:1" disabled>Resume</button>
-        <button id="stopBtn" class="btn" style="display:none;flex:0.6;background:#d93025;color:white;border:none" disabled>Stop</button>
+        <button id="pauseBtn" class="btn btn-warning" style="display:none;flex:1" disabled>暂停</button>
+        <button id="resumeBtn" class="btn btn-success" style="display:none;flex:1" disabled>恢复</button>
+        <button id="stopBtn" class="btn" style="display:none;flex:0.6;background:#d93025;color:white;border:none" disabled>停止</button>
       </div>
 
       <div id="ccbPanel" style="display:none">
         <div class="ccb-form">
-          <h3 style="font-size:14px;margin-bottom:8px">CCB Approval</h3>
-          <label>Validation Result: <span id="ccbVerdict" style="font-weight:600">--</span></label>
-          <select id="ccbChoice"><option>Pass</option><option>Fail (Acquisition)</option><option>Fail (Analysis)</option></select>
-          <textarea id="ccbComment" placeholder="Comments (optional)"></textarea>
-          <button id="ccbBtn" class="btn btn-success" style="width:100%">Submit Approval</button>
+          <h3 style="font-size:14px;margin-bottom:8px">🔍 CCB 人工审批</h3>
+
+          <div style="background:#fafafa;border-radius:8px;padding:10px;margin-bottom:10px;max-height:250px;overflow-y:auto;font-size:12px;line-height:1.6" id="ccbReviewContent">
+            <span style="color:#999">等待验证报告...</span>
+          </div>
+
+          <label style="margin-top:8px">📋 审批决定</label>
+          <select id="ccbChoice" style="font-size:13px">
+            <option value="通过">✅ 通过 — 审批通过，进入基线创立</option>
+            <option value="不通过(获取类)">❌ 不通过（获取类）— 涉众需求未充分获取，回退A1重新对话</option>
+            <option value="不通过(分析类)">❌ 不通过（分析类）— 需求分析不充分，回退A2重新分析</option>
+          </select>
+          <div style="margin-top:6px;padding:6px 10px;background:#e8f5e9;border-radius:4px;font-size:11px;color:#2e7d32">💡 「通过」不代表 SRS 完美无缺——它只意味着当前 SRS 达到了可进入基线创立阶段的阈值。需求基线是一个<b>快照</b>，不是一个终点。后续设计开发中需求仍可能变更，但每次变更需走正式的变更管理流程。</div>
+          <textarea id="ccbComment" placeholder="审批意见（必填，说明通过或不通过的理由）" style="margin-top:8px"></textarea>
+          <button id="ccbBtn" class="btn btn-success" style="width:100%;margin-top:8px">提交审批</button>
         </div>
       </div>
 
       <div id="donePanel" style="display:none">
-        <p style="font-size:13px;color:#34a853;margin-bottom:10px">Workflow Complete!</p>
-        <button id="resetBtn" class="btn" style="width:100%;background:#e8eaed">Run Again</button>
+        <p style="font-size:13px;color:#34a853;margin-bottom:10px">工作流完成！</p>
+        <button id="resetBtn" class="btn" style="width:100%;background:#e8eaed">重新运行</button>
       </div>
     </div>
 
     <div class="card">
-      <h3>Log</h3>
+      <h3>📋 日志</h3>
       <div class="log" id="logContainer"></div>
     </div>
   </div>
@@ -373,18 +413,18 @@ header span{font-size:13px;opacity:.9}
   <div class="main">
     <div class="card">
       <div class="tabs" id="mainTabs">
-        <button class="tab-btn active" data-tab="dialogs">Dialog</button>
-        <button class="tab-btn" data-tab="requirements">Requirements</button>
+        <button class="tab-btn active" data-tab="dialogs">对话</button>
+        <button class="tab-btn" data-tab="requirements">需求</button>
         <button class="tab-btn" data-tab="uml">UML</button>
         <button class="tab-btn" data-tab="srs">SRS</button>
-        <button class="tab-btn" data-tab="validation">Validation</button>
-        <button class="tab-btn" data-tab="baseline">Baseline/RTM</button>
+        <button class="tab-btn" data-tab="validation">验证</button>
+        <button class="tab-btn" data-tab="baseline">基线/RTM</button>
       </div>
 
       <div id="tab-dialogs" class="tab-content active">
         <div class="stakeholder-tabs" id="stakeholderTabs"></div>
         <div id="stakeholderDialogs"></div>
-        <div class="empty" id="dialogEmpty">Click Run Full Workflow to start</div>
+        <div class="empty" id="dialogEmpty">点击"清除上次产物并运行全流程"开始</div>
       </div>
       <div id="tab-requirements" class="tab-content"><div class="result-content" id="reqContent">pending</div></div>
       <div id="tab-uml" class="tab-content"><div class="result-content" id="umlContent">pending</div></div>
@@ -429,14 +469,19 @@ function addDialog(stakeholder, question, answer) {
   document.getElementById("dialogEmpty").style.display = "none";
 }
 
+function formatMsg(text) {
+  // 先转义HTML再转换换行为<br>，保留涉众回答的换行/分点格式
+  return escapeHtml(text).replace(/\n/g, "<br>");
+}
+
 function renderDialog(stakeholder) {
   const container = document.getElementById("dialog-" + stakeholder);
   if (!container) return;
   const items = dialogs[stakeholder] || [];
   container.innerHTML = items.map((m, i) =>
     `<div class="chat">
-      <div class="chat-q"><small>Q${i+1}:</small>${escapeHtml(m.q)}</div>
-      <div class="chat-a"><small>A:</small>${escapeHtml(m.a)}</div>
+      <div class="chat-q"><small>Q${i+1}:</small>${formatMsg(m.q)}</div>
+      <div class="chat-a"><small>A:</small>${formatMsg(m.a)}</div>
     </div>`
   ).join("");
 }
@@ -460,7 +505,6 @@ function updateProgress(phase) {
     A5_缺陷报告:80,
     CCB_审批:88,
     A6_基线:95,
-    A7_ADR:99,
     _done:100
   };
   const pct = pcts[phase] || 0;
@@ -483,7 +527,7 @@ function connectSSE() {
     const m = data.msg.match(/global round (\d+)/);
     if (m) {
       document.getElementById("iterationBadge").style.display = "inline-block";
-      document.getElementById("iterationBadge").textContent = "Round " + m[1];
+      document.getElementById("iterationBadge").textContent = "第" + m[1] + "轮";
     }
   });
   sse.addEventListener("dialog", e => {
@@ -502,8 +546,8 @@ function connectSSE() {
   });
   sse.addEventListener("done", e => {
     document.getElementById("startBtn").disabled = false;
-    document.getElementById("startBtn").textContent = "Run Full Workflow";
-    document.getElementById("statusBadge").textContent = "Done";
+    document.getElementById("startBtn").textContent = "清除上次产物并运行全流程";
+    document.getElementById("statusBadge").textContent = "已完成";
     document.getElementById("statusBadge").className = "status-badge status-done";
     document.getElementById("pauseBtn").style.display = "none";
     document.getElementById("resumeBtn").style.display = "none";
@@ -518,7 +562,216 @@ function connectSSE() {
 function showCCBPanel() {
   document.getElementById("ccbPanel").style.display = "block";
   document.getElementById("startBtn").disabled = true;
-  document.getElementById("startBtn").textContent = "Waiting for CCB...";
+  document.getElementById("startBtn").textContent = "等待 CCB 审批...";
+
+  const reviewDiv = document.getElementById("ccbReviewContent");
+  let html = "";
+
+  // ── 解析验证报告 ──
+  const verdict = results.validation_verdict || "--";
+  let findings = [];
+  try {
+    if (results.validation_report) {
+      const raw = results.validation_report;
+      const start = raw.indexOf("{");
+      const end = raw.lastIndexOf("}") + 1;
+      if (start >= 0 && end > start) {
+        const jsonStr = raw.substring(start, end);
+        const d = JSON.parse(jsonStr);
+        findings = d.findings || [];
+      }
+    }
+  } catch(e) {
+    console.log("CCB panel: failed to parse validation report JSON", e);
+  }
+
+  // ── 按类型 + 严重程度归类（教材术语：阻塞性/重要/建议）──
+  // 获取类：历史遗漏、对话偏差 → A1涉众对话不足
+  // 分析类：文档矛盾、内部不一致 → A2/A4分析/文档问题
+  let acqBlocker = 0, acqMajor = 0, acqMinor = 0;
+  let anaBlocker = 0, anaMajor = 0, anaMinor = 0;
+
+  findings.forEach(f => {
+    const sev = f.severity || "重要";
+    // 兼容旧格式 "严重/中/低"
+    const isBlocker = sev === "阻塞性" || sev === "严重";
+    const isMajor = sev === "重要" || sev === "中";
+    const isAcq = f.type === "历史遗漏" || f.type === "对话偏差";
+    if (isAcq) {
+      if (isBlocker) acqBlocker++;
+      else if (isMajor) acqMajor++;
+      else acqMinor++;
+    } else {
+      if (isBlocker) anaBlocker++;
+      else if (isMajor) anaMajor++;
+      else anaMinor++;
+    }
+  });
+
+  const acqTotal = acqBlocker + acqMajor + acqMinor;
+  const anaTotal = anaBlocker + anaMajor + anaMinor;
+
+  // ════════════════════════════════════════
+  // 分类统计卡片
+  // ════════════════════════════════════════
+  if (findings.length > 0) {
+    html += `<div style="margin-bottom:10px;display:flex;gap:10px;font-size:12px">
+      <div style="flex:1;padding:10px;background:#fce8e6;border-radius:8px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#d93025">${acqTotal}</div>
+        <div style="color:#666;font-weight:600;margin-bottom:6px">获取类问题<br><small>（A1 涉众对话不足）</small></div>
+        <div style="display:flex;gap:4px;justify-content:center">
+          <span style="background:#d93025;color:white;padding:2px 8px;border-radius:10px;font-size:11px">🔴 阻塞 ${acqBlocker}</span>
+          <span style="background:#f9ab00;color:white;padding:2px 8px;border-radius:10px;font-size:11px">🟡 重要 ${acqMajor}</span>
+          <span style="background:#34a853;color:white;padding:2px 8px;border-radius:10px;font-size:11px">🟢 建议 ${acqMinor}</span>
+        </div>
+      </div>
+      <div style="flex:1;padding:10px;background:#fff3e0;border-radius:8px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#e65100">${anaTotal}</div>
+        <div style="color:#666;font-weight:600;margin-bottom:6px">分析类问题<br><small>（A2/A4 分析文档不足）</small></div>
+        <div style="display:flex;gap:4px;justify-content:center">
+          <span style="background:#d93025;color:white;padding:2px 8px;border-radius:10px;font-size:11px">🔴 阻塞 ${anaBlocker}</span>
+          <span style="background:#f9ab00;color:white;padding:2px 8px;border-radius:10px;font-size:11px">🟡 重要 ${anaMajor}</span>
+          <span style="background:#34a853;color:white;padding:2px 8px;border-radius:10px;font-size:11px">🟢 建议 ${anaMinor}</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ════════════════════════════════════════
+  // 发现详情（带责任标注）
+  // ════════════════════════════════════════
+  if (findings.length > 0) {
+    html += `<div style="margin-bottom:8px;padding:6px 8px;background:#e8f5e9;border-left:3px solid #34a853;border-radius:4px;font-size:12px;font-weight:600;color:#2e7d32">📌 问题详情</div>`;
+    findings.forEach((f, i) => {
+      const isAcq = f.type === "历史遗漏" || f.type === "对话偏差";
+      const tag = isAcq ? '<span style="background:#fce8e6;color:#d93025;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">获取类 → A1</span>' :
+                          '<span style="background:#fff3e0;color:#e65100;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">分析类 → A2</span>';
+      const isBlocker = f.severity === "阻塞性" || f.severity === "严重";
+      const isMajor = f.severity === "重要" || f.severity === "中";
+      const icon = isBlocker ? "🔴" : isMajor ? "🟡" : "🟢";
+      const bgColor = isBlocker ? "#fce8e6" : isMajor ? "#fff3e0" : "#f5f5f5";
+      html += `<div style="margin:3px 0;padding:8px 10px;background:${bgColor};border-radius:4px;font-size:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+          <span>${icon} <b>[${f.type||'?'}]</b> · ${escapeHtml(f.severity||'?')}</span>
+          ${tag}
+        </div>
+        <div style="line-height:1.5">${escapeHtml(f.description||'')}</div>
+        <small style="color:#666">📍 ${f.section||'--'} | 📄 ${escapeHtml(f.source_ref||'—')} | 💡 ${escapeHtml(f.suggestion||'无')}</small>
+      </div>`;
+    });
+  } else {
+    html += `<div style="color:#34a853;font-size:13px;text-align:center;padding:10px">✅ 未发现需求质量问题，SRS 质量良好</div>`;
+  }
+
+  // ════════════════════════════════════════
+  // ════════════════════════════════════════
+  // 决策依据 — 教材原文定义 + 数据驱动的建议
+  // ════════════════════════════════════════
+  const hasFindings = acqTotal + anaTotal > 0;
+  const verdictVal = (results.validation_verdict || "");
+
+  let suggestHtml = "";
+  if (!hasFindings) {
+    // 解析成功但确实无发现，或用 verdict 兜底
+    if (verdictVal.includes("获取")) {
+      suggestHtml = `<div style="background:#fce8e6;padding:10px;border-radius:6px;text-align:center;font-size:13px;font-weight:600;color:#d93025">⚠️ 验证结论：获取类问题 → 建议选择「不通过（获取类）」</div>`;
+    } else if (verdictVal.includes("分析")) {
+      suggestHtml = `<div style="background:#fff3e0;padding:10px;border-radius:6px;text-align:center;font-size:13px;font-weight:600;color:#e65100">⚠️ 验证结论：分析类问题 → 建议选择「不通过（分析类）」</div>`;
+    } else {
+      suggestHtml = `<div style="background:#e8f5e9;padding:10px;border-radius:6px;text-align:center;font-size:13px;font-weight:600;color:#34a853">✅ 未发现问题，建议通过</div>`;
+    }
+  } else if (acqTotal > 0 && anaTotal === 0) {
+    suggestHtml = `<div style="background:#fce8e6;padding:10px;border-radius:6px;text-align:center;font-size:13px;font-weight:600;color:#d93025">⚠️ 全部为获取类问题 → 建议选择「不通过（获取类）」</div>`;
+  } else if (anaTotal > 0 && acqTotal === 0) {
+    suggestHtml = `<div style="background:#fff3e0;padding:10px;border-radius:6px;text-align:center;font-size:13px;font-weight:600;color:#e65100">⚠️ 全部为分析类问题 → 建议选择「不通过（分析类）」</div>`;
+  } else {
+    suggestHtml = `<div style="background:#fce8e6;padding:10px;border-radius:6px;text-align:center;font-size:13px;font-weight:600;color:#d93025">⚠️ 获取类 ${acqTotal} 个 ≥ 分析类 ${anaTotal} 个 → 建议选择「不通过（获取类）」先解决上游问题</div>`;
+  }
+
+  html += suggestHtml;
+
+  html += `<div style="margin-top:10px;padding:10px;background:#e3f2fd;border-radius:6px;font-size:12px;line-height:1.8">
+    <b>📖 教材定义 — 如何区分两类问题：</b><br><br>
+    <b style="color:#d93025">获取类问题</b>：SRS中存在的问题<b>不是文档编写的问题</b>，而是根本的<b>需求获取不够充分</b>——某些涉众的关键关切没有被问到、某些功能场景没有被探索、某些边界条件没有被澄清。这类问题<b>不能通过修改SRS文本来解决</b>，必须回到需求获取阶段（A1），让涉众AI智能体与涉众进行补充对话。<br><br>
+    <b style="color:#e65100">分析类问题</b>：SRS中存在逻辑矛盾或描述不准确，但这些问题<b>可以通过重新分析（而非重新获取）来解决</b>——例如两条需求之间的矛盾可以通过重新审视业务逻辑来调解，<b>不需要涉众的额外输入</b>。这类问题回退到A2重新进行需求分析即可。
+  </div>`;
+
+  // ════════════════════════════════════════
+  // 逐条诊断：自动分析每条发现的修复必要性
+  // ════════════════════════════════════════
+  let mustFix = [], canDefer = [];
+  findings.forEach((f, i) => {
+    const sev = f.severity || "";
+    const type = f.type || "";
+    const desc = (f.description || "").toLowerCase();
+
+    // 判定规则：
+    // 必须修复：阻塞性 / 冲突 / 显式矛盾 / 涉及核心流程缺失 / 安全合规
+    // 可以延后：建议级 / 仅措辞优化 / 非核心边缘场景
+    const isBlocker = sev === "阻塞性" || sev === "严重";
+    const isConflict = type === "冲突";
+    const isExplicitContradiction = type === "矛盾" && (f.dimension_detail || "").includes("显式");
+    const isSecurity = desc.includes("安全") || desc.includes("合规") || desc.includes("权限");
+    const isCoreMissing = type === "历史遗漏" && isBlocker;
+    const isMinor = sev === "建议" || sev === "低";
+    const isCosmetic = desc.includes("措辞") || desc.includes("格式") || desc.includes("描述不严谨");
+
+    if (isConflict || isExplicitContradiction || isSecurity || isCoreMissing || (isBlocker && !isCosmetic)) {
+      mustFix.push({...f, idx: i+1});
+    } else if (isMinor || isCosmetic) {
+      canDefer.push({...f, idx: i+1});
+    } else {
+      // 灰色地带：中等严重度但非核心 → 标注为「需你判断」
+      canDefer.push({...f, idx: i+1, uncertain: true});
+    }
+  });
+
+  // ── 逐条诊断渲染 ──
+  html += `<div style="margin-top:10px;padding:12px;background:#fff8e1;border:2px solid #f9a825;border-radius:8px;font-size:12px;line-height:1.8">
+    <b>🎯 逐条诊断 — 什么必须修？什么可以放？</b><br><br>`;
+
+  if (mustFix.length > 0) {
+    html += `<div style="margin-bottom:10px"><b style="color:#d93025">🔴 建议必须修复（${mustFix.length} 条）：</b></div>`;
+    mustFix.forEach(f => {
+      const icon = f.severity === "阻塞性" || f.severity === "严重" ? "🔴" : "🟡";
+      html += `<div style="margin:4px 0;padding:6px 8px;background:#fce8e6;border-radius:4px">
+        ${icon} <b>[${f.type}]</b> ${escapeHtml((f.description||'').substring(0, 100))}
+        <span style="color:#d93025;font-size:10px;font-weight:700">
+          — ${f.type==='冲突'?'冲突必须解决':''}${f.type==='矛盾'?'逻辑矛盾阻碍实现':''}${f.type==='历史遗漏'?'核心功能缺失':''}${f.type==='对话偏差'?'需求曲解影响交付':''}${f.type==='文档矛盾'?'不一致阻碍下游':''}${f.type==='内部不一致'?'SRS自相矛盾':''}
+        </span>
+      </div>`;
+    });
+  }
+
+  if (canDefer.length > 0) {
+    html += `<div style="margin-bottom:10px"><b style="color:#34a853">🟢 可以后续迭代修复（${canDefer.length} 条）：</b></div>`;
+    canDefer.forEach(f => {
+      const icon = f.uncertain ? "🟡" : "🟢";
+      html += `<div style="margin:4px 0;padding:6px 8px;background:#e8f5e9;border-radius:4px">
+        ${icon} <b>[${f.type}]</b> ${escapeHtml((f.description||'').substring(0, 100))}
+        ${f.uncertain ? '<span style="color:#e65100;font-size:10px">（需你判断是否必须修）</span>' : '<span style="color:#34a853;font-size:10px">（可后续迭代）</span>'}
+      </div>`;
+    });
+  }
+
+  if (mustFix.length === 0 && canDefer.length === 0) {
+    html += `<div style="color:#34a853;font-weight:600">✅ 未发现需要关注的缺陷</div>`;
+  }
+
+  html += `<div style="margin-top:10px;font-size:11px;color:#888">
+    <b>你的判断</b>：如果上方 🔴 必须修复的条目中有你认为确实阻塞的 → 选<b style="color:#d93025">不通过</b>；如果 🔴 条目你可以接受或打算后续处理 → 选<b style="color:#34a853">通过</b>。
+    记住：<i>"判断什么必须修、什么可以放——这种能力比写出完美文档更稀缺和珍贵。"</i>
+  </div></div>`;
+
+  // ════════════════════════════════════════
+  // 教学交付物
+  // ════════════════════════════════════════
+  html += `<div style="margin-top:10px;padding:6px 8px;background:#fff3e0;border-left:3px solid #f9ab00;border-radius:4px;font-size:12px;font-weight:600;color:#e65100">📦 教学交付物 — 5份缺陷分析报告（课程要求，非审批依据）</div>`;
+  if (results.defect_reports) {
+    html += `<details style="font-size:11px;margin-top:4px"><summary>展开查看</summary><div style="max-height:120px;overflow-y:auto;white-space:pre-wrap;background:#fafafa;padding:6px;border-radius:4px;margin-top:4px">${escapeHtml(results.defect_reports).substring(0, 2000)}</div></details>`;
+  }
+
+  reviewDiv.innerHTML = html;
 }
 
 function addLog(msg) {
@@ -542,34 +795,60 @@ function updateResultTabs() {
   if (results.consolidated_requirements)
     document.getElementById("reqContent").innerHTML = "<pre>" + escapeHtml(results.consolidated_requirements) + "</pre>";
   if (results.uml_use_case) {
-    let html = "<b>Use Case Diagram</b><pre>" + escapeHtml(results.uml_use_case) + "</pre>";
+    let html = "<b>用例图</b><pre>" + escapeHtml(results.uml_use_case) + "</pre>";
     if (results.uml_activity_diagrams)
-      html += "<hr><b>Activity/Sequence/ER</b><pre>" + escapeHtml(results.uml_activity_diagrams).substring(0,5000) + "...</pre>";
+      html += "<hr><b>活动图/时序图/E-R图</b><pre>" + escapeHtml(results.uml_activity_diagrams).substring(0,5000) + "...</pre>";
     document.getElementById("umlContent").innerHTML = html;
   }
   if (results.srs_draft)
     document.getElementById("srsContent").innerHTML = "<pre>" + escapeHtml(results.srs_draft) + "</pre>";
-  if (results.validation_report) {
-    let vr = "<b>Verdict:</b> " + (results.validation_verdict || "--") + "<hr>";
-    try {
-      const d = JSON.parse(results.validation_report.substring(results.validation_report.indexOf("{")));
-      if (d.findings) d.findings.forEach(f => {
-        vr += `<div style="margin-bottom:6px">${f.severity==='严重'?'R':f.severity==='中'?'Y':'G'} <b>[${f.type}]</b> ${escapeHtml(f.description)}<br><small>${f.section||''} | ${escapeHtml(f.suggestion||'')}</small></div>`;
-      });
-    } catch(e) {}
-    document.getElementById("validationContent").innerHTML = vr;
+  if (results.validation_report || results.defect_reports) {
+    let vhtml = "";
+    // ── 审批依据：验证报告 ──
+    vhtml += "<div style='background:#e8f5e9;padding:8px 12px;border-left:3px solid #34a853;margin-bottom:10px;font-size:12px;font-weight:600;color:#2e7d32'>📌 审批依据 — A5交叉验证报告</div>";
+    if (results.validation_report) {
+      vhtml += "<b>验证结论:</b> <span style='font-weight:600'>" + (results.validation_verdict || "--") + "</span><hr>";
+      try {
+        const d = JSON.parse(results.validation_report.substring(results.validation_report.indexOf("{")));
+        if (d.findings && d.findings.length > 0) {
+          d.findings.forEach(f => {
+            const icon = f.severity==='严重'?'🔴':f.severity==='中'?'🟡':'🟢';
+            vhtml += `<div style="margin-bottom:6px">${icon} <b>[${f.type}]</b> ${escapeHtml(f.description)}<br><small>📍 ${f.section||''} | 💡 ${escapeHtml(f.suggestion||'')}</small></div>`;
+          });
+        } else {
+          vhtml += "<div style='color:#34a853'>✅ 未发现问题</div>";
+        }
+      } catch(e) {
+        vhtml += "<pre style='font-size:11px'>" + escapeHtml(results.validation_report).substring(0, 2000) + "</pre>";
+      }
+    }
+    // ── 教学交付物：缺陷报告 ──
+    if (results.defect_reports) {
+      vhtml += "<hr><div style='background:#fff3e0;padding:8px 12px;border-left:3px solid #f9ab00;margin-bottom:10px;font-size:12px;font-weight:600;color:#e65100'>📦 教学交付物 — 5份缺陷分析报告（课程要求）</div>";
+      vhtml += "<details><summary>展开查看</summary><pre style='font-size:11px;max-height:300px;overflow-y:auto'>" + escapeHtml(results.defect_reports) + "</pre></details>";
+    }
+    document.getElementById("validationContent").innerHTML = vhtml;
   }
-  if (results.defect_reports)
-    document.getElementById("validationContent").innerHTML += "<hr><details><summary>5 Defect Reports</summary><pre>" + escapeHtml(results.defect_reports) + "</pre></details>";
   if (results.baseline_version)
-    document.getElementById("baselineContent").innerHTML = "<b>Baseline:</b> " + results.baseline_version + "<hr><pre>" + escapeHtml(results.rtm || "") + "</pre>";
+    document.getElementById("baselineContent").innerHTML = "<b>基线:</b> " + results.baseline_version + "<hr><pre>" + escapeHtml(results.rtm || "") + "</pre>";
 }
 
 document.getElementById("startBtn").onclick = async () => {
   document.getElementById("startBtn").disabled = true;
-  document.getElementById("startBtn").textContent = "Running...";
+  document.getElementById("startBtn").textContent = "正在清除上次产物...";
+
+  // 先清除上次工作流产物
+  try {
+    const cleanupResp = await fetch("/cleanup", {method:"POST"});
+    const cleanupData = await cleanupResp.json();
+    addLog("已清除上次工作流产物 (" + (cleanupData.cleaned || 0) + " 个目录)");
+  } catch(e) {
+    addLog("清除产物失败: " + e.message);
+  }
+
+  document.getElementById("startBtn").textContent = "运行中...";
   document.getElementById("statusBadge").style.display = "inline-block";
-  document.getElementById("statusBadge").textContent = "Running";
+  document.getElementById("statusBadge").textContent = "运行中";
   document.getElementById("statusBadge").className = "status-badge status-running";
   document.getElementById("pauseBtn").style.display = "inline-block";
   document.getElementById("pauseBtn").disabled = false;
@@ -584,7 +863,7 @@ document.getElementById("startBtn").onclick = async () => {
   document.querySelectorAll(".stakeholder-content").forEach(c => c.innerHTML = "");
   document.getElementById("dialogEmpty").style.display = "block";
   ["reqContent","umlContent","srsContent","validationContent","baselineContent"].forEach(id => {
-    document.getElementById(id).innerHTML = "pending";
+    document.getElementById(id).innerHTML = "等待中...";
   });
   document.querySelectorAll(".step").forEach(s => s.classList.remove("active","done"));
   document.getElementById("progressFill").style.width = "0%";
@@ -593,28 +872,28 @@ document.getElementById("startBtn").onclick = async () => {
   const resp = await fetch("/start", {method:"POST"});
   const data = await resp.json();
   if (!data.ok) {
-    addLog("Error: " + (data.error || "start failed"));
+    addLog("错误: " + (data.error || "启动失败"));
     document.getElementById("startBtn").disabled = false;
-    document.getElementById("startBtn").textContent = "Run Full Workflow";
+    document.getElementById("startBtn").textContent = "清除上次产物并运行全流程";
   }
 };
 
 document.getElementById("pauseBtn").onclick = async () => {
   document.getElementById("pauseBtn").disabled = true;
-  document.getElementById("pauseBtn").textContent = "Pausing...";
+  document.getElementById("pauseBtn").textContent = "暂停中...";
   document.getElementById("resumeBtn").style.display = "inline-block";
   document.getElementById("resumeBtn").disabled = false;
-  document.getElementById("statusBadge").textContent = "Paused";
+  document.getElementById("statusBadge").textContent = "已暂停";
   document.getElementById("statusBadge").className = "status-badge status-paused";
   await fetch("/pause", {method:"POST"});
 };
 
 document.getElementById("resumeBtn").onclick = async () => {
   document.getElementById("resumeBtn").disabled = true;
-  document.getElementById("resumeBtn").textContent = "Resuming...";
+  document.getElementById("resumeBtn").textContent = "恢复中...";
   document.getElementById("pauseBtn").disabled = false;
   document.getElementById("pauseBtn").textContent = "Pause";
-  document.getElementById("statusBadge").textContent = "Running";
+  document.getElementById("statusBadge").textContent = "运行中";
   document.getElementById("statusBadge").className = "status-badge status-running";
   await fetch("/resume", {method:"POST"});
   document.getElementById("resumeBtn").style.display = "none";
@@ -622,11 +901,11 @@ document.getElementById("resumeBtn").onclick = async () => {
 
 document.getElementById("stopBtn").onclick = async () => {
   document.getElementById("stopBtn").disabled = true;
-  document.getElementById("stopBtn").textContent = "Stopping...";
+  document.getElementById("stopBtn").textContent = "停止中...";
   document.getElementById("pauseBtn").disabled = true;
   document.getElementById("resumeBtn").disabled = true;
   await fetch("/stop", {method:"POST"});
-  document.getElementById("stopBtn").textContent = "Stopped";
+  document.getElementById("stopBtn").textContent = "已停止";
 };
 
 document.getElementById("ccbBtn").onclick = async () => {
@@ -634,13 +913,13 @@ document.getElementById("ccbBtn").onclick = async () => {
   const comment = document.getElementById("ccbComment").value;
   await fetch("/ccb", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({verdict, comment})});
   document.getElementById("ccbPanel").style.display = "none";
-  document.getElementById("startBtn").textContent = "Continuing...";
+  document.getElementById("startBtn").textContent = "继续执行...";
 };
 
 document.getElementById("resetBtn").onclick = () => {
   document.getElementById("donePanel").style.display = "none";
   document.getElementById("startBtn").disabled = false;
-  document.getElementById("startBtn").textContent = "Run Full Workflow";
+  document.getElementById("startBtn").textContent = "清除上次产物并运行全流程";
   document.getElementById("statusBadge").style.display = "none";
 };
 

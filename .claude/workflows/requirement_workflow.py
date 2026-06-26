@@ -185,6 +185,73 @@ AGENT_CONFIG_FILES = {
 }
 
 
+def _next_baseline_version(ds: str) -> str:
+    """自动递增基线版本号：扫描 wiki/baselines/ 目录，同日基线递增"""
+    baselines_dir = os.path.join(KB_ROOT, "wiki/baselines")
+    if not os.path.exists(baselines_dir):
+        return f"BL-{ds}-01"
+    existing = [d for d in os.listdir(baselines_dir)
+                if os.path.isdir(os.path.join(baselines_dir, d))
+                and d.startswith(f"BL-{ds}-")]
+    if not existing:
+        return f"BL-{ds}-01"
+    nums = [int(d.rsplit("-", 1)[-1]) for d in existing
+            if d.rsplit("-", 1)[-1].isdigit()]
+    return f"BL-{ds}-{max(nums) + 1:02d}" if nums else f"BL-{ds}-01"
+
+
+def _generate_diff(old_version: str, new_version: str, srs_current: str, rtm_current: str) -> str:
+    """生成两个基线之间的需求差异文档"""
+    baselines_dir = os.path.join(KB_ROOT, "wiki/baselines")
+    old_rtm_path = os.path.join(baselines_dir, old_version, f"RTM_{old_version}_需求溯源矩阵.md")
+    old_rtm = ""
+    if os.path.exists(old_rtm_path):
+        with open(old_rtm_path, "r", encoding="utf-8") as f:
+            old_rtm = f.read()[:8000]
+
+    prompt = f"""请对比新旧两个基线的需求溯源矩阵（RTM），生成需求差异分析文档。
+
+旧基线 RTM（{old_version}）：
+{old_rtm if old_rtm else "（初始基线，无历史版本）"}
+
+新基线 RTM（{new_version}）：
+{rtm_current[:8000]}
+
+新基线 SRS（摘要）：
+{srs_current[:3000]}
+
+请按以下格式输出需求差异文档：
+
+# 需求差异分析 — {old_version} → {new_version}
+
+## 变更摘要
+[简要描述本次变更的整体情况]
+
+## 新增需求
+| 需求编号 | 需求名称 | 新增原因 |
+|---------|---------|---------|
+
+## 修改需求
+| 需求编号 | 需求名称 | 变更前 | 变更后 | 修改原因 |
+|---------|---------|-------|-------|---------|
+
+## 删除需求
+| 需求编号 | 需求名称 | 删除原因 |
+|---------|---------|---------|
+
+## 未变更需求
+| 需求编号 | 需求名称 |
+|---------|---------|
+
+## 影响分析
+[变更对下游设计、开发、测试的影响评估]
+
+严格基于新旧 RTM 表格内容进行比对。如果旧基线为空，则所有需求标记为「新增」，变更摘要注明「初始基线，无历史对比」。
+"""
+    result = call_llm(prompt, system_prompt="你是配置管理专家，精通需求变更管理和基线对比分析。")
+    return result
+
+
 def load_agent_configs() -> dict:
     """从知识库读取4份涉众AI智能体配置文件，返回 {名称: {role, goal, backstory}} 字典"""
     configs = {}
@@ -268,11 +335,11 @@ class RequirementState(TypedDict):
     baseline_version: str
     rtm: str
 
-    # A7 ADR
-    adr_documents: str
-
     # 回退原因（A1 Agent根据此判断如何行动）
     rollback_reason: str             # "" / "A2_rollback" / "A5_acquisition" / "CCB_acquisition" / "A5_analysis" / "CCB_analysis"
+
+    # 版本号管理（wiki/summaries 层文档版本跟踪）
+    doc_versions: dict               # {"req_list": 1, "issues": 1, "uml": 1, "srs": 1, "validation": 1, "defect": 1}
 
     # 控制
     iteration_count: int
@@ -302,7 +369,7 @@ def call_llm(prompt: str, system_prompt: str = "", max_tokens: int = 16000) -> s
 
 def call_stakeholder(stakeholder: str, question: str) -> str:
     """调用涉众API"""
-    payload = {"project_id": PROJECT_ID, "stakeholder": stakeholder, "phase": "v1", "question": question}
+    payload = {"project_id": PROJECT_ID, "stakeholder": stakeholder, "phase": "v2", "question": question}
     try:
         resp = requests.post(STAKEHOLDER_API, json=payload, verify=False, timeout=60)
         resp.raise_for_status()
@@ -332,11 +399,17 @@ KB_DIRS = {
 
 
 def save_to_kb(subdir: str, filename: str, content: str) -> str:
-    """将内容保存到 Obsidian 知识库的对应目录，返回文件路径"""
+    """将内容保存到 Obsidian 知识库的对应目录，返回文件路径。
+    基线目录（baselines/archive）受不可变性保护——已有文件不会被覆盖。"""
     base = KB_DIRS[subdir]
-    # 如果 filename 包含子路径（如 "BL-20260618-01/SRS-正式版.md"），需要递归创建目录
     full_path = os.path.join(base, filename)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+    # 基线不可变性：baselines 和 archive 目录下的文件一旦创立不得修改或删除
+    if subdir in ("baselines", "archive") and os.path.exists(full_path):
+        print(f"  ⛔ [基线不可变] {subdir}/{filename} 已存在，拒绝覆盖")
+        return full_path
+
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(content)
     print(f"  [DIR] 知识库: {subdir}/{filename}")
@@ -465,7 +538,22 @@ def _a1_agent(stakeholder: str, state: RequirementState) -> dict:
 
         # 加载该涉众的 Agent 定义（Role/Goal/Backstory）作为系统提示
         agent_def = get_agent_definitions().get(stakeholder, {})
-        agent_system_prompt = f"你是一名资深的需求分析工程师，正在访谈「{stakeholder}」。\n关于该角色的背景信息：\n- 角色：{agent_def.get('role', stakeholder)}\n- 核心目标：{agent_def.get('goal', '')}\n- 背景：{agent_def.get('backstory', '')}"
+        agent_system_prompt = f"""你是一名资深的需求分析工程师，正在访谈「{stakeholder}」。你的职责是「真实记录涉众诉求」，不负责「在记录前过滤或调解」。
+
+关于该角色的背景信息：
+- 角色：{agent_def.get('role', stakeholder)}
+- 核心目标：{agent_def.get('goal', '')}
+- 背景：{agent_def.get('backstory', '')}
+
+## 权限边界守则（必须遵守）
+
+当涉众提出需求时，你按照以下三条边界判断如何回应：
+
+1. **物理不可行**（如要求设备在物理极限之外运行）→ 礼貌指出物理约束，引导涉众调整为可实现版本：「您提到的这个速度，目前设备的机械响应时间最少需要X秒，您看X秒以内可以接受吗？」
+2. **预算/时间约束不可行**（如要求极端天气全覆盖）→ 如实记录该需求，但在追问中引导涉众明确可接受的范围和成本：「这个要求在极端情况下确实理想，不过实现的成本会很高。您觉得在日常天气条件下，哪些保护是必须的？台风等极端情况可以接受降级运行吗？」
+3. **与其他涉众潜在冲突**（如A说越快越好，B说要均衡使用）→ 不要当场调解，不要建议折中方案。如实记录双方各自诉求，将冲突发现留给后续的需求分析阶段处理。你可以追问澄清该涉众自己的需求细节，但不能透露其他涉众的立场。
+
+核心原则：你是记录者，不是调解者。过滤和仲裁是需求分析阶段的工作。"""
 
         fire_progress(f"[{stakeholder}] AI开始访谈...")
 
@@ -495,11 +583,16 @@ def _a1_agent(stakeholder: str, state: RequirementState) -> dict:
 
 请根据已有对话，判断你是否已经充分了解该角色的需求。
 - 如果已经了解清楚（覆盖了工作流程、痛点、异常场景、核心需求），输出：{{"done": true}}
-- 如果还需要追问，生成下一个自然、具体的问题，要求：
-  1. 不要问已经问过的话题
-  2. 追问之前回答中模糊的细节（「很多」「大概」「经常」等模糊表述）
-  3. 探索异常情况（「如果…出错了怎么办」）
-  4. 每个问题只聚焦一个方面
+- 如果还需要追问，生成下一个自然、具体的问题。按以下优先级选择追问方向：
+  1. **场景引导**：从不问「你需要什么功能」，而是问「你今天的工作是怎样进行的？遇到了什么麻烦？」，将涉众的注意力锚定在日常工作上
+  2. **痛点追问**：探测涉众最沮丧的时刻——「旧流程中最让你想摔键盘的是什么？」「这个环节你每天要花多少时间？」「出错了谁背锅？」从抱怨中提取量化需求
+  3. **异常路径探测**：涉众默认只描述正常流程，你需要主动追问异常——「如果这一步失败了怎么办？」「最坏情况下会发生什么？」「有没有特殊客户不走这个流程？」
+  4. **数据边界追问**：把「很多」「很快」「偶尔」转为具体数字——「你说的'很快'大概几秒？比你现在用的快多少？」「'偶尔'是一天一次还是一周一次？」
+
+要求：
+- 不要问已经问过的话题
+- 每个问题只聚焦一个策略方向
+- 用涉众的日常语言，不要用技术术语
 
 输出严格JSON格式（只有JSON，不要其他文字）：
 {{"done": false, "question": "你的追问问题"}}"""
@@ -581,15 +674,16 @@ def _a1_agent(stakeholder: str, state: RequirementState) -> dict:
 2. 对每个相关问题，生成1句自然语言的追问问题
 
 要求：
-- 把"模糊""不一致""遗漏"等技术术语翻译成涉众日常语言
-- 引用之前对话中的具体内容作为铺垫（"你刚才提到...请问..."）
+- 把技术术语翻译成涉众日常语言。需求质量问题的元语言（「模糊」「不一致」「矛盾」）是需求工程师的语言，不是涉众的语言——不要让涉众觉得「我的需求被退回修正了」。
+- 翻译示例：A2标记「UR-ORD-032 模糊：系统应在合理的时间内响应」→ 你追问「您上次提到系统要很快地响应，我想确认一下——您觉得格口门在您扫码之后多久内打开是您可以接受的？一两秒？还是三五秒也行？」
+- 引用之前对话中的具体内容作为铺垫（「你刚才提到...请问...」）
 - 最多不超过3个追问，优先关注严重问题
 
 输出严格JSON格式（只有JSON，不要其他文字）：
 {{"relevant": true/false, "follow_ups": ["追问句1", "追问句2"]}}
 """
 
-    result = call_llm(prompt, system_prompt="你是专业的涉众需求分析师，擅长根据问题生成自然追问。")
+    result = call_llm(prompt, system_prompt="你是专业的涉众需求分析师，擅长将技术性的质量问题翻译为涉众日常语言生成自然追问。")
     data = extract_json(result)
 
     if data.get("relevant") and data.get("follow_ups"):
@@ -612,7 +706,7 @@ def _a1_agent(stakeholder: str, state: RequirementState) -> dict:
 # ============================================================
 
 def a1_consolidate(state: RequirementState) -> dict:
-    """A1汇总：合并四个涉众的需求为结构化需求清单"""
+    """A1汇总：合并四个涉众的需求为结构化需求清单（教材§3格式：双重记录）"""
     run_stop_checks()
     fire_phase("A1_汇总")
     fire_progress("[CHART] A1: 正在汇总4个涉众的需求清单...")
@@ -621,42 +715,58 @@ def a1_consolidate(state: RequirementState) -> dict:
         for name, cfg in STAKEHOLDER_CONFIG.items()
     }
 
-    prompt = f"""你作为需求分析员，将以下四个涉众的对话记录整理为结构化的需求清单。
+    # 扫描 raw/notes 获取实际文件路径用于来源引用
+    source_files = {}
+    raw_notes_dir = KB_DIRS["raw_notes"]
+    if os.path.exists(raw_notes_dir):
+        for fname in os.listdir(raw_notes_dir):
+            fpath = f"raw/notes/{fname}"
+            for s in STAKEHOLDER_CONFIG:
+                if s in fname and fname.endswith(".md"):
+                    source_files[s] = fpath
+                    break
 
-对话记录：
-{json.dumps(all_dialogs, ensure_ascii=False, indent=2)}
+    prompt = f"""你作为需求分析员，将以下四个涉众的对话记录整理为结构化的需求清单。采用「双重记录」格式——每条需求包含涉众原始陈述和你的提炼版本。
 
-请严格按以下格式输出，确保每次输出格式完全一致：
+涉众对话记录及来源文件：
+{json.dumps({name: {"source_file": source_files.get(name, f"raw/notes/{{name}}-需确认-需求记录.md"), "dialogs": dialogs} for name, dialogs in all_dialogs.items()}, ensure_ascii=False, indent=2)}
 
-1. 按以下7个功能模块分类（不要增减模块名）：
-   - 设备管理
-   - 租赁订单
-   - 费用结算
-   - 系统配置
-   - 数据统计
-   - 用户认证
-   - 客户管理
+请严格按以下格式输出每条需求（双重记录格式）：
 
-2. 每条需求格式（无歧义）：
-   BR-{{模块缩写}}-{{三位编号}} | UR-{{模块缩写}}-{{三位编号}} | 来源（招商业务员/库房人员/运维工程师/财务） | 需求描述 | 优先级（高/中/低） | 边界条件
+### BR-{{模块缩写}}-{{三位序号}}
+| 字段 | 内容 |
+|------|------|
+| 业务目标ID | BR-{{模块缩写}}-{{三位序号}} |
+| 业务目标描述 | {{一句话描述此需求对应的业务价值}} |
+| 原始需求ID | UR-{{模块缩写}}-{{三位序号}} |
+| 需求来源 | {{来源文件路径}}（{{涉众角色}}） |
+| 需求陈述 | 「{{从对话记录中直接引用涉众的原话，保留完整语境}}」 |
+| 需求提炼 | 作为{{角色}}，我希望{{系统能力}}，以便{{业务价值}} |
+| 优先级 | 高/中/低 |
 
-3. 编号规则：每个模块从001开始独立编号。BR编号代表业务目标，UR编号代表原始需求
-   模块缩写对照：设备管理->EQP 租赁订单->ORD 费用结算->FIN 系统配置->CFG 数据统计->STA 用户认证->AUTH 客户管理->CRM
+输出规则：
+1. 按7个功能模块分组：设备管理、租赁订单、费用结算、系统配置、数据统计、用户认证、客户管理
+2. 模块缩写：设备管理->EQP 租赁订单->ORD 费用结算->FIN 系统配置->CFG 数据统计->STA 用户认证->AUTH 客户管理->CRM
+3. 每个模块 BR 和 UR 从001开始独立编号，一一对应
+4. 优先级判断依据：涉众反复强调且情绪强烈 → 高；明确提及但未反复 → 中；追问下才确认 → 低
+5. 需求陈述必须是对涉众原话的直接引用，不要改写
+6. 需求提炼严格使用「作为...，我希望...，以便...」的三段式
+7. 每个模块分组下按优先级排序（高→中→低）
+8. 在文档末尾列出涉众来源索引表（涉众角色 → 来源文件路径）"""
 
-4. 标注每条需求的边界条件（如数量范围、时间周期、金额限制）
+    result = call_llm(prompt, system_prompt="你是一名资深需求分析工程师，擅长将涉众对话整理为结构化需求。必须严格遵循双重记录格式：需求陈述（直接引用涉众原话）+ 需求提炼（用户故事格式）。")
 
-5. 在末尾为每个涉众生成 [[{{涉众名}}需求记录]] 的双向链接"""
-
-    result = call_llm(prompt, system_prompt="你是一名资深需求分析工程师，擅长将涉众对话整理为结构化需求。")
+    # 版本号递增
+    doc_ver = state.get("doc_versions", {}).get("req_list", 1)
 
     # 保存到知识库
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
-    conv_content = kb_frontmatter(f"需求清单-{ds}", ["需求", "汇总"], ["需求清单"]) + result
-    save_to_kb("wiki", f"需求清单-{ds}-v1.0.md", conv_content)
+    conv_content = kb_frontmatter(f"需求清单-{ds}-v{doc_ver}", ["需求", "汇总"], ["需求清单"]) + result
+    save_to_kb("wiki", f"需求清单-{ds}-v{doc_ver}.md", conv_content)
 
-    fire_progress("[OK] A1: 需求清单汇总完成")
+    fire_progress("[OK] A1: 需求清单汇总完成（双重记录格式）")
     fire_result("consolidated_requirements", result)
-    return {"consolidated_requirements": result}
+    return {"consolidated_requirements": result, "doc_versions": {**state.get("doc_versions", {}), "req_list": doc_ver + 1}}
 
 
 # ============================================================
@@ -677,43 +787,68 @@ def a2_analyze_quality(state: RequirementState) -> dict:
         fire_progress(f"  ↻ A2: 来自{reason}回退，轮次重置为第1轮")
 
     fire_progress(f"[FIND] A2: 第{current_round}轮需求质量分析...")
-    prompt = f"""对以下需求清单进行四维度质量检测（第{current_round}轮/最多{max_rounds}轮）：
+    prompt = f"""对以下需求清单进行四维度质量检测（第{current_round}轮/最多{max_rounds}轮）。四个维度严重性递增：模糊(最轻)→不一致→矛盾→冲突(最重，需CCB介入)。
 
 {state.get("consolidated_requirements", "")}
 
-检测维度：
-1. **模糊** - 是否包含「尽量」「大概」「合理」「快速」等不可量化词语
-2. **不一致** - 同一术语在不同地方是否有不同定义
-3. **矛盾** - 两条需求是否在逻辑上无法同时成立
-4. **冲突** - 不同涉众的互斥期望
-5. **编号缺失** - 需求是否缺少 BR（业务目标）或 UR（原始需求）编号
+## 维度一：模糊（Ambiguity）
+不同人阅读同一需求时可能产生不同理解。检测方法：
+**方法1 — 关键词扫描**：搜索不可量化修饰词——「尽量」「尽可能」「一般情况下」「通常」「大概」「左右」「适当」「合理」「快速」「及时」。一旦出现即标记。
+**方法2 — 限定条件缺失**：检查需求是否缺少关键要素——触发条件、执行者、时间约束、数量范围、异常处理。例如「系统应发送通知」若未指定通知渠道、接收者、触发条件和时效，则标记为模糊。
+
+## 维度二：不一致（Inconsistency）
+同一术语在不同需求条目中有不同定义，但这些定义在逻辑上可以共存（区别于矛盾）。检测方法：
+**术语映射法**：提取所有需求中出现的核心术语（如「订单状态」「设备状态」「用户角色」「租赁周期」），逐条检查同一术语是否在不同地方被赋予了不同的枚举值或约束。例如需求A说「订单状态5种」，需求B说「订单状态7种」——可以共存但需统一。不一致≠矛盾：不一致是"用了两套规则"，矛盾是"两套规则互斥"。
+
+## 维度三：矛盾（Contradiction）
+两条需求在逻辑上无法同时成立。分两类：
+**显式矛盾**（AI高可靠检测）：两条需求对同一参数给出不同常数值，如A说「有效期为24小时」B说「有效期为48小时」。
+**隐式矛盾**（AI有限检测）：表面不矛盾，但结合领域知识推理后矛盾。例如A说「取件码无限期有效」B说「快递员离职后其投递的包裹取件码全部失效」→ 若快递员离职发生在用户取件前则矛盾。检测隐式矛盾时需要标注「需人工确认」。
+
+## 维度四：冲突（Conflict）
+不同涉众的期望互斥——满足一方必然损害另一方。检测方法：
+按功能域分组（设备管理、租赁订单、费用结算……），在每个功能域内检查来自不同涉众的需求是否存在目标层面的互斥。例如「招商业务员要求租赁合同审批越快越好，财务要求每份合同必须经过三层复核」——无法同时最大化。
+**重要**：A2智能体的职责是发现并报告冲突，不是裁决冲突。冲突的最终裁决权在CCB。
+
+---
 
 输出严格JSON格式：
-{{"issues": [{{"type": "模糊/不一致/矛盾/冲突", "severity": "严重/中/低", "description": "问题描述", "source": "涉及涉众", "suggestion": "修正建议"}}], "has_critical": true/false}}"""
+{{"issues": [{{"type": "模糊/不一致/矛盾/冲突", "subtype": "显式矛盾/隐式矛盾/关键词模糊/条件缺失/术语不统一/涉众冲突（按需填）", "severity": "严重/中/低", "description": "具体问题描述（引用需求编号和原文）", "source": "涉及涉众（冲突类需同时列出双方）", "consequence": "该问题如果不解决可能导致的具体后果（如：交付后返工、测试用例不可编写、涉众验收不通过等）", "clarification_path": "推荐的澄清路径（如：回退A1请涉众确认X；统一术语定义并更新所有引用；提交CCB裁决等）", "suggestion": "具体修正建议"}}], "has_critical": true/false}}
 
-    result = call_llm(prompt, system_prompt="你是一名严格的需求质量审查专家。请精确输出JSON。")
+**在JSON之后附加详细解释**（供人类审计）：
+对每个判定为「严重」或「中」的问题，用自然语言段落解释：为什么判定为问题、逻辑推理过程、不解决的风险。确保每一条判定都有可被审计的理由，不要仅仅是关键词匹配——展示你的推理链。"""
+
+    result = call_llm(prompt, system_prompt="你是一名严格的需求质量审查专家。你必须对每条判定给出可被审计的推理理由，而不仅仅是执行关键词匹配。输出JSON问题清单后附加详细解释段落。")
     data = extract_json(result)
     issues = data.get("issues", [])
     has_critical = data.get("has_critical", False)
 
+    # 版本号递增
+    doc_ver = state.get("doc_versions", {}).get("issues", 1)
+
     # 保存问题清单到知识库
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
     issue_rows = "\n".join(
-        f"| {i.get('type','')} | {i.get('severity','')} | {i.get('description','')} | {i.get('source','')} | {i.get('suggestion','')} |"
+        f"| {i.get('type','')} | {i.get('severity','')} | {i.get('description','')} | {i.get('source','')} | {i.get('consequence','')} | {i.get('clarification_path','')} | {i.get('suggestion','')} |"
         for i in issues
-    ) if issues else "| — | — | 未发现严重问题 | — | — |"
-    issues_content = kb_frontmatter(f"需求问题清单-{ds}", ["问题", "质量分析"], ["需求问题清单"]) + f"""# 需求问题清单
+    ) if issues else "| — | — | 未发现严重问题 | — | — | — | — |"
+    issues_content = kb_frontmatter(f"需求问题清单-{ds}-v{doc_ver}", ["问题", "质量分析"], ["需求问题清单"]) + f"""# 需求问题清单
 
 生成日期：{ds}
 分析轮次：第{current_round}轮
 
-| 类型 | 严重程度 | 问题描述 | 涉及涉众 | 修正建议 |
-|-----|---------|---------|---------|---------|
+## 问题总表
+| 类型 | 严重程度 | 问题描述 | 涉及涉众 | 不解决的后果 | 推荐澄清路径 | 修正建议 |
+|-----|---------|---------|---------|------------|------------|---------|
 {issue_rows}
 
-> 本报告由 A2 需求分析 Agent 生成，关联 [[需求清单-{ds}-v1.0|需求清单]]
+## 详细解释（人类审计）
+以下是对严重/中等问题的人工可审计理由：
+{result}
+
+> 本报告由 A2 需求分析 Agent 生成，关联 [[需求清单-{ds}-v{doc_ver}|需求清单]]
 """
-    save_to_kb("wiki", f"需求问题清单-{ds}-v1.0.md", issues_content)
+    save_to_kb("wiki", f"需求问题清单-{ds}-v{doc_ver}.md", issues_content)
 
     if has_critical:
         fire_progress(f"[FIND] A2: 第{current_round}轮发现{len(issues)}个问题（含严重），回退A1追问")
@@ -725,6 +860,7 @@ def a2_analyze_quality(state: RequirementState) -> dict:
         "has_critical_issues": has_critical,
         "a2_round": current_round + 1,
         "rollback_reason": "A2_rollback" if has_critical else "",
+        "doc_versions": {**state.get("doc_versions", {}), "issues": doc_ver + 1},
     }
 
 
@@ -764,35 +900,43 @@ def a3_generate_uml(state: RequirementState) -> dict:
 
     # ── ⭐ 阶段1：专门生成完善的用例图 ──
     fire_progress("  [GOAL] [A3/1] 专注生成用例图（Use Case Diagram）...")
-    uc_prompt = f"""根据以下需求清单，生成一份高质量的**PlantUML用例图**。
+    uc_prompt = f"""你是一名UML建模专家。请根据以下需求清单生成PlantUML用例图。遵循以下方法论：
 
 需求清单：
-{state.get("consolidated_requirements", "")[:6000]}
+{state.get("consolidated_requirements", "")[:8000]}
 
-要求：
-1. Actor = 4种角色（招商业务员、库房人员、运维工程师、财务）
-2. 用例覆盖7个功能模块的全部功能：
-   - 设备管理（设备入库、出库、维修、报废、台账管理）
-   - 租赁订单（租单创建、审核、出库、归还、延期）
-   - 费用结算（租金计算、催缴、支付确认、退款）
-   - 系统配置（角色权限、参数配置、日志管理）
-   - 数据统计（收入统计、设备利用率、客户报表）
-   - 用户认证（登录、登出、密码修改）
-   - 客户管理（客户信息维护、合同管理、信用评估）
-3. 使用 <<include>> 标注必需子功能（如：创建订单 include 客户资质验证）
-4. 使用 <<extend>> 标注可选扩展功能（如：订单审批 extend 加急处理）
-5. 用注解（note）标注关键业务规则
-6. 每个Actor至少关联5个用例
+## 第一步：涉众 → Actor 映射
+从需求清单中识别所有与系统交互的角色。注意：「涉众」和「Actor」不是一一对应的——同一个涉众可能在不同场景下扮演不同的Actor角色，多个涉众也可能共享同一个Actor角色。映射时只提取真正与系统直接交互的角色，排除仅作为信息接收方的被动角色。
 
-输出严格 @startuml ... @enduml 格式，只输出PlantUML代码，不要其他文字。"""
+## 第二步：从需求中提取用例
+从每条需求的「需求陈述」和「需求提炼」中提取动词短语，然后进行语义归类：
+- **合并判断**：如果多个动作的核心业务价值相同、业务流程相同，仅触发条件和权限不同 → 合并为一个用例
+- **拆分判断**：如果同一动作在不同情境下业务流程完全不同 → 拆分为独立用例
+- 每个用例必须是Actor视角下「一项完整的、有价值的服务」，不要用CRUD操作粒度的碎片化用例
+
+## 第三步：建立关系
+- `<<include>>` — 被包含的用例是基用例的必需步骤（如：创建订单必然包含客户资质验证）
+- `<<extend>>` — 扩展用例在特定条件下触发（如：取件超时 extend 计费处理）
+- Actor与用例的关联不是随意的——仔细判断每个Actor是否有权访问该用例（普通用户不应关联到财务报表，那是管理员专有的）
+
+## 第四步：附加注解
+用 `note` 标注关键的 Actor 映射决策和用例合并/拆分理由，让你的设计决策可被审计。
+
+输出要求：
+- 至少 3 个 Actor，至少 8 个用例
+- 至少 2 个 <<include>> 和 2 个 <<extend>>
+- 严格 @startuml ... @enduml 格式，只输出PlantUML代码"""
     uc_result = call_llm(uc_prompt, system_prompt="你是UML建模专家，精通PlantUML用例图。")
+
+    # 版本号递增
+    doc_ver = state.get("doc_versions", {}).get("uml", 1)
 
     # 确保有 @startuml 和 @enduml
     if not uc_result.strip().startswith("@startuml"):
         uc_result = "@startuml\n" + uc_result
     if not uc_result.strip().endswith("@enduml"):
         uc_result = uc_result.strip() + "\n@enduml"
-    save_to_kb("wiki", f"用例图-{ds}-v1.0.puml", uc_result)
+    save_to_kb("wiki", f"用例图-{ds}-v{doc_ver}.puml", uc_result)
     fire_progress(f"  [OK] 用例图已生成（{len(uc_result)}字）")
 
     # ── 阶段2：生成活动图/时序图/E-R图 ──
@@ -800,22 +944,24 @@ def a3_generate_uml(state: RequirementState) -> dict:
     other_prompt = f"""根据以下需求清单，生成UML模型（PlantUML代码）。
 
 需求清单：
-{state.get("consolidated_requirements", "")[:6000]}
+{state.get("consolidated_requirements", "")[:8000]}
 
 请生成以下三类图，每类图用 @startuml ... @enduml 包裹，图间用空行分隔：
 
 1. **活动图（Activity Diagram）** — 至少3个核心流程
-   - 租赁订单完整流程（创建→审核→出库→归还→结算）
-   - 设备入库流程（到货→质检→登记→上架→更新台账）
-   - 设备维修流程（报修→派单→维修→验收→归档）
-   - 每个图包含：正常路径×2 + 异常路径×2，分支条件用[Guard Condition]
+   从需求清单中选出业务逻辑最复杂、分支最多的3个核心用例来画活动图（不要固定流程名，你自己判断哪些最值得画）。
+   每个活动图必须严格包含：
+   - **Swimlane（泳道）**：用 `|泳道名|` 标注每个活动的执行角色，明确哪个涉众负责哪个活动
+   - **Guard Condition**：每个决策节点用 `[条件]` 标注明确的可判断真伪的条件（如 `[金额>5000?]`）。活动图的核心价值就是「不允许模糊」——每一个分支都必须有显式的判断条件，不能写「正常情况走A」
+   - **Fork/Join**：并发操作必须用 `fork` 和 `fork again` / `end fork` 明确标注（如：开柜的同时并发执行「更新格口状态」和「发送取件通知」）
+   - **路径覆盖**：每个图至少 2 条正常路径 + 2 条异常路径 + 1 条边界路径
 
 2. **时序图（Sequence Diagram）** — 至少1个核心流程
-   - 租赁订单创建流程：展示 Actor → Controller → Service → Repository 的完整调用时序
-   - 包含：正常流程消息、异常返回消息、循环/可选片段
+   - 展示 Actor → Controller → Service → Repository 的完整调用时序
+   - 包含：正常流程消息、异常返回消息、循环/可选片段（`loop`/`alt`/`opt`）
 
 3. **数据库E-R图**（PlantUML格式，不是Mermaid）
-   - 核心实体：设备、客户、租赁订单、合同、费用记录、维修记录
+   - 从需求清单中提取核心实体（不要硬编码实体名，根据需求实际分析）
    - 标注实体间关系（1对多、多对多）和关键属性字段
 
 输出严格每图 @startuml ... @enduml 格式。"""
@@ -830,17 +976,17 @@ def a3_generate_uml(state: RequirementState) -> dict:
     all_others = "\n\n".join(other_diagrams)
 
     if all_others:
-        save_to_kb("wiki", f"行为模型图-{ds}-v1.0.puml", all_others)
+        save_to_kb("wiki", f"行为模型图-{ds}-v{doc_ver}.puml", all_others)
 
     # ── 保存总说明 ──
     total_diagrams = 1 + len(other_diagrams)
-    uml_doc = kb_frontmatter(f"UML模型-{ds}", ["UML", "建模"], ["UML模型"]) + f"""# UML模型
+    uml_doc = kb_frontmatter(f"UML模型-{ds}-v{doc_ver}", ["UML", "建模"], ["UML模型"]) + f"""# UML模型
 
 生成日期：{ds}
 
 ## 文件
-- [[用例图-{ds}-v1.0.puml|用例图]]
-- [[行为模型图-{ds}-v1.0.puml|活动图/时序图/E-R图]]
+- [[用例图-{ds}-v{doc_ver}.puml|用例图]]
+- [[行为模型图-{ds}-v{doc_ver}.puml|活动图/时序图/E-R图]]
 
 ## 所涉图类型
 1. [OK] 用例图（Use Case）— 4角色 × 7模块，含 <<include>> / <<extend>>
@@ -849,16 +995,17 @@ def a3_generate_uml(state: RequirementState) -> dict:
 4. [OK] 数据库E-R图（Entity Relationship Diagram）
 
 ## 关联需求
-- [[需求清单-{ds}-v1.0|需求清单]]
+- [[需求清单-{ds}-v{doc_ver}|需求清单]]
 
 > 由 A3 建模 Agent 根据需求清单生成
 """
-    save_to_kb("wiki", f"UML模型说明-{ds}-v1.0.md", uml_doc)
+    save_to_kb("wiki", f"UML模型说明-{ds}-v{doc_ver}.md", uml_doc)
 
     fire_progress(f"[OK] A3: UML模型生成完成（共{total_diagrams}张图）")
     fire_result("uml_use_case", uc_result)
     fire_result("uml_activity_diagrams", all_others)
-    return {"uml_use_case": uc_result, "uml_activity_diagrams": all_others}
+    return {"uml_use_case": uc_result, "uml_activity_diagrams": all_others,
+            "doc_versions": {**state.get("doc_versions", {}), "uml": doc_ver + 1}}
 
 
 # ============================================================
@@ -879,16 +1026,31 @@ UML模型：
 {state.get("uml_use_case", "")[:2000]}
 {state.get("uml_activity_diagrams", "")[:2000]}
 
+## 生成方法：两阶段法
+
+**第一阶段：骨架生成。** 先按IEEE 830模板生成完整的章节目录和每个章节的框架句子。此阶段不追求语言流畅，只保证结构完整、章节编号正确、所有必填项都有占位。
+
+**第二阶段：骨架填充。** 在骨架中逐章填充具体内容。填充时遵守一条铁律：**精确优先于流畅**。当精确性和语言流畅性产生冲突时，牺牲流畅性以保证精确性。例如：
+- ❌ 「系统应快速响应用户的扫码操作」
+- ✅ 「系统应在用户扫码后500毫秒内完成取件码验证并返回验证结果」
+AI可能会在润色语言时不自觉地将精确数字替换为模糊形容词——这是SRS生成中最大的风险。你必须主动抵制这种倾向。保留需求清单中的每一个数字、每一个边界条件、每一个约束参数，宁可语言生硬，不可牺牲精度。
+
 请严格按照以下模板结构生成，缺一不可：
 
 ---
 # 文档头部信息
 | 项目项 | 内容 |
+| ---- | ---- |
 | 文档名称 | 软件需求规格说明书（SRS）|
 | 项目名称 | 医疗器械租赁管理系统 |
+| 项目编号 | MED-RENTAL-2026 |
 | 文档版本 | V1.0.0 |
 | 基线版本 | 【占位，由A6分配】|
+| 编制人 | AI基线智能体（A6） |
 | 编制日期 | 【当前日期】|
+| 审核人 | CCB变更控制委员会 |
+| 批准人 | CCB变更控制委员会 |
+| 密级 | 内部 |
 
 ## 修订历史记录
 | 版本号 | 修订日期 | 修订类型 | 修订内容简述 |
@@ -929,7 +1091,7 @@ flowchart TD
 ## 3.1 功能需求（FR）
 按7个模块分节：用户认证、设备管理、客户管理、租赁订单、费用结算、数据统计、系统配置
 每条功能需求格式：
-**FR-{{模块缩写}}-{{编号}}**
+**FR-{{模块缩写}}-{{编号}}**（沿用 BR-{{模块缩写}}-{{编号}} / UR-{{模块缩写}}-{{编号}} 的对应关系）
 - 优先级：P0(必实现)/P1(重要)/P2(次要)
 - 参与角色
 - 前置条件
@@ -938,6 +1100,7 @@ flowchart TD
 - 业务规则（含边界条件、数量范围、时间周期）
 - 后置状态
 - 验收标准（可量化、可测试、无歧义）
+- 关联需求条目：BR-{{模块缩写}}-{{编号}} / UR-{{模块缩写}}-{{编号}}
 
 ### 系统用例图（plantUML代码）
 -- 务必在此处输出完整的 plantUML 用例图代码 --
@@ -960,20 +1123,89 @@ flowchart TD
 ### 数据管理策略（备份/归档/留存）
 
 # 4 需求基线与变更管理
-## 4.1 基线定义（版本规则、冻结规则）
-## 4.2 变更流程概述（CR->CIA->约束更新->代码变更->CRR->新基线）
+## 4.1 需求基线定义
+1. 基线版本格式：`BL-YYYYMMDD-NN`（YYYYMMDD=日期，NN=当日流水号）；
+2. 初始基线：经CCB审批通过、正式发布的第一版SRS；
+3. 基线冻结：基线发布后，禁止无流程私自修改需求。
+
+## 4.2 需求变更整体流程
+```mermaid
+flowchart LR
+    classDef stage fill:#f0f8ff,stroke:#2c5282
+    classDef judge fill:#fff3f3,stroke:#c53030
+
+    subgraph S1 [变更需求获取]
+        A[AI涉众沟通 / 提交CR文档]
+    end
+    class S1 stage
+
+    subgraph S2 [变更需求分析]
+        B[质量分析+建模+SRS初稿<br/>基线比对+差异文档]
+    end
+    class S2 stage
+
+    subgraph S3 [变更审核 CCB]
+        C{{审核结果}}
+    end
+    class S3 judge
+
+    subgraph S4 [新基线创立]
+        D[生成溯源矩阵+新版基线<br/>保留历史基线]
+    end
+    class S4 stage
+
+    A --> B
+    B --> C
+    C -- 不通过 --> E[流程结束]
+    C -- 退回修改 --> A
+    C -- 审核通过 --> D
+```
+
+## 4.3 变更详细流程（四阶段）
+### 4.3.1 阶段一：变更需求获取
+两种途径：涉众AI智能体沟通 / 需求提出方提交正式CR变更需求文档
+
+### 4.3.2 阶段二：变更需求分析（4个子阶段）
+1. 需求质量分析：校验变更需求合理性、完整性、无歧义
+2. 项目建模：更新UML用例图、活动图
+3. SRS初稿生成：整合输出变更版SRS初稿
+4. 基线比对：读取历史基线，生成需求差异文档
+
+### 4.3.3 阶段三：变更审核（CCB评审）
+1. 审核不通过 → 流程终止
+2. 审核退回修改 → 返回变更需求获取阶段
+3. 审核通过 → 进入新基线创立环节
+
+### 4.3.4 阶段四：新基线创立
+1. 生成需求溯源矩阵（RTM），建立变更前后条目映射
+2. 将审核通过的SRS定为新版正式基线
+3. 沿用版本规则生成新基线编号
+4. 历史基线文档完整归档、不覆盖、不删除
+
+## 4.4 变更记录台账
+| 变更编号 | 变更日期 | 申请人 | 变更来源(AI/CR) | 变更简述 | 影响模块 | CCB结论 | 新版基线号 |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| — | — | — | 初始基线 | 初始基线，无历史变更 | — | 通过 | 【占位】 |
 
 # 5 附录
-## 附录A 验收标准总表（编号->名称->标准->优先级）
+## 附录A 全量图表汇总
+集中存放本SRS中的架构图、用例图、E-R图、流程图（Mermaid代码）：
+- 系统架构图：见 §2.1
+- 系统用例图：见 §3.1
+- E-R图：见 §3.4
+- 变更流程图：见 §4.2
+
+## 附录B 验收标准总表
 | 需求编号 | 需求名称 | 验收标准 | 优先级 |
 | ---- | ---- | ---- | ---- |
 |（由各模块功能需求填充）| | | |
-## 附录B 参考资料
+
+## 附录C 参考资料与外部文档链接
 1. GB/T 9385-2008 计算机软件需求规格说明规范
 2. IEEE 830 软件需求规格说明书标准
 3. 《高级软件设计实践》教材书稿
-4. 医疗器械租赁管理系统涉众需求调研记录
-5. 医疗器械租赁管理系统UML建模产物（用例图、活动图、时序图、E-R图）
+4. 医疗器械租赁管理系统涉众需求调研记录（raw/notes/）
+5. 医疗器械租赁管理系统UML建模产物
 6. 医疗器械租赁管理系统结构化需求清单
 
 ---
@@ -986,7 +1218,7 @@ flowchart TD
 4. 「系统用例图」的 PlantUML 代码必须完整，包含所有涉众角色
 5. 「附录A 验收标准总表」至少填充3行真实需求"""
 
-    result = call_llm(prompt, system_prompt="你是专业的软件需求文档编写专家，精通IEEE 830标准。精确优先于流畅。", max_tokens=32000)
+    result = call_llm(prompt, system_prompt="你是专业的软件需求文档编写专家，精通IEEE 830标准。记住：精确优先于流畅。保留每一个数字和边界条件，不因追求可读性而引入模糊。", max_tokens=32000)
 
     # 后处理：强制修正 SRS 所有不规范之处
     _project_name = "医疗器械租赁管理系统"
@@ -1002,8 +1234,7 @@ flowchart TD
     for _pat in [r"20\d{2}[-/年]\d{1,2}[-/月]\d{1,2}[日]?", r"\d{4}年\d{1,2}月\d{1,2}日"]:
         result = _re.sub(_pat, _today_str, result)
 
-    # 3. 强制修正编号体系：REQ-XXX-xxx -> FR-XXX-xxx
-    result = _re.sub(r'(?<![A-Z])REQ-([A-Z]+)-', r'FR-\1-', result)
+    # 3. 编号体系：需求清单中 REQ 对应 SRS 中 FR，不再做 REQ→FR 强制替换（保留引用链）
     for _nf_old, _nf_new in [("PERF-", "NFR-PERF-"), ("SEC-", "NFR-SEC-"), ("REL-", "NFR-REL-"),
                              ("MAINT-", "NFR-MAINT-"), ("PER-", "NFR-PERF-")]:
         result = _re.sub(_nf_old + r'(\d+)', _nf_new + r'\1', result)
@@ -1114,35 +1345,44 @@ erDiagram
     if "# 4 需求基线与变更管理" not in result:
         result += "\n\n# 4 需求基线与变更管理\n"
         result += "## 4.1 需求基线定义\n"
-        result += "基线版本格式：BL-YYYYMMDD-NN（YYYYMMDD=日期，NN=当日流水号）\n"
-        result += "初始基线：经CCB审批通过、正式发布的第一版SRS\n"
-        result += "基线冻结：基线发布后，禁止无流程私自修改需求。\n"
+        result += "基线版本格式：BL-YYYYMMDD-NN，初始基线经CCB审批发布，基线冻结后禁止无流程私自修改。\n\n"
         result += "## 4.2 需求变更整体流程\n"
-        result += "变更流程：CR（变更请求）-> CIA（影响分析）-> 约束更新 -> 代码变更 -> CRR（回归校验）-> 新基线\n"
+        result += "流程图（Mermaid）参见规范文档§4.2。\n\n"
+        result += "## 4.3 变更详细流程（四阶段）\n"
+        result += "阶段一：变更需求获取 → 阶段二：变更需求分析（质量分析+建模+SRS+基线比对）→ 阶段三：CCB审核 → 阶段四：新基线创立\n\n"
+        result += "## 4.4 变更记录台账\n"
+        result += "| 变更编号 | 变更日期 | 申请人 | 变更来源 | 变更简述 | 影响模块 | CCB结论 | 新版基线号 |\n"
+        result += "| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |\n"
+        result += "| — | — | — | 初始基线 | 初始基线 | — | 通过 | — |\n"
 
-    # 8. 确保附录存在（章节编号根据架构图/E-R图插入后的情况调整）
+    # 8. 确保附录存在
     if "## 附录A" not in result:
         result += "\n\n# 5 附录\n"
-        result += "## 附录A 验收标准总表\n"
+        result += "## 附录A 全量图表汇总\n"
+        result += "集中存放架构图、用例图、E-R图、流程图。\n\n"
+        result += "## 附录B 验收标准总表\n"
         result += "| 需求编号 | 需求名称 | 验收标准 | 优先级 |\n"
         result += "| ---- | ---- | ---- | ---- |\n"
-        result += "|（由各模块功能需求填充）| | | |\n"
-        result += "## 附录B 参考资料\n"
+        result += "|（由各模块功能需求填充）| | | |\n\n"
+        result += "## 附录C 参考资料与外部文档链接\n"
         result += "1. GB/T 9385-2008 计算机软件需求规格说明规范\n"
         result += "2. IEEE 830 软件需求规格说明书标准\n"
         result += "3. 《高级软件设计实践》教材书稿\n"
         result += "4. 医疗器械租赁管理系统涉众需求调研记录\n"
-        result += "5. 医疗器械租赁管理系统UML建模产物（用例图、活动图、时序图、E-R图）\n"
+        result += "5. 医疗器械租赁管理系统UML建模产物\n"
         result += "6. 医疗器械租赁管理系统结构化需求清单\n"
+
+    # 版本号递增
+    doc_ver = state.get("doc_versions", {}).get("srs", 1)
 
     # 保存SRS到知识库
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
-    srs_content = kb_frontmatter("SRS-正式版", ["SRS", "需求规格"], ["软件需求规格说明书"]) + result
-    save_to_kb("wiki", f"SRS-初稿-{ds}-v1.0.md", srs_content)
+    srs_content = kb_frontmatter(f"SRS-{ds}-v{doc_ver}", ["SRS", "需求规格"], ["软件需求规格说明书"]) + result
+    save_to_kb("wiki", f"SRS-初稿-{ds}-v{doc_ver}.md", srs_content)
 
     fire_progress(f"[OK] A4: SRS文档生成完成（{len(result)}字）")
     fire_result("srs_draft", result)
-    return {"srs_draft": result}
+    return {"srs_draft": result, "doc_versions": {**state.get("doc_versions", {}), "srs": doc_ver + 1}}
 
 
 # ============================================================
@@ -1154,29 +1394,62 @@ def a5_validate_srs(state: RequirementState) -> dict:
     run_stop_checks()
     fire_phase("A5_验证")
     fire_progress("[SEARCH] A5: 正在执行交叉验证...")
-    prompt = f"""对以下SRS文档进行交叉验证（教材§7规定的四类比对）。
+    prompt = f"""你正在对医疗器械租赁管理系统的SRS初稿进行交叉验证。
+
+## 输入文件
+- **SRS初稿**：wiki/summaries/SRS-初稿-vX.X.md（见下方完整内容）
+- **需求清单**：wiki/summaries/需求清单-{ds}-vX.md（含涉众原话陈述和提炼版本）
+- **涉众对话记录**：raw/notes/ 目录下全部涉众需求记录
+- **UML模型**：wiki/summaries/ 目录下用例图和活动图
 
 SRS文档（完整）：
 {state.get("srs_draft", "")}
 
-验证方法（四类交叉比对）：
-1. **历史需求比对** - SRS是否遗漏了对话记录中存在的需求条目
-2. **涉众对话比对** - SRS中每条功能需求是否准确反映涉众在对话中表达的意图（标注诠释准确度：完全匹配/合理诠释/部分偏差/严重曲解）
-3. **项目文档比对** - SRS中的约束、用户特征定义是否与知识库中的其他项目文档一致
-4. **SRS内部一致性比对** - SRS不同章节之间的术语一致性、数据字典与功能需求之间的字段一致性
+需求清单（含涉众原话）：
+{state.get("consolidated_requirements", "")[:5000]}
+
+## 四类交叉比对方法
+
+### 1. 历史需求比对
+检查SRS是否遗漏了需求清单中存在但SRS中未出现的需求条目。逐条REQ在SRS中搜索对应描述，找不到的标记为「历史遗漏」。
+
+### 2. 涉众对话比对（核心）
+将SRS功能需求追溯到需求清单中的「需求陈述」（涉众原话），判断SRS是否准确反映了涉众意图。使用四级语义等价标注：
+- **完全匹配**：SRS精确转述涉众要求
+- **合理诠释**：SRS做了合理具体化
+- **部分偏差**：局部偏离，需回A1确认
+- **严重曲解**：严重误解，须回A1重新对话
+
+### 3. 项目文档比对
+检查SRS中用户特征定义、约束条件是否与需求清单中各涉众实际描述一致。
+
+### 4. SRS内部一致性比对
+检查术语统一性、数据字典字段定义与功能需求使用方式是否一致。
+
+---
 
 输出严格JSON格式：
-{{"verdict": "通过/获取类问题/分析类问题", "findings": [{{"type": "历史遗漏/对话偏差/文档矛盾/内部不一致", "severity": "严重/中/低", "section": "涉及SRS章节", "description": "问题描述", "suggestion": "修正建议"}}]}}"""
+{{"verdict": "通过（建议进入基线创立）/ 修改后重新验证（获取类问题→回A1）/ 修改后重新验证（分析类问题→回A2）", "summary": {{"total_issues": N, "blocker": N, "major": N, "minor": N, "by_type": {{"历史遗漏": N, "对话偏差": N, "文档矛盾": N, "内部不一致": N}}, "by_source": {{"完全匹配": N, "合理诠释": N, "部分偏差": N, "严重曲解": N}}}}, "findings": [{{"type": "历史遗漏/对话偏差/文档矛盾/内部不一致", "source_match": "完全匹配/合理诠释/部分偏差/严重曲解（仅对话偏差类需要）", "severity": "阻塞性/重要/建议", "section": "涉及SRS章节编号", "description": "具体问题描述", "source_ref": "引用REQ编号或涉众原话作为证据", "suggestion": "修正建议"}}]}}"""
 
-    result = call_llm(prompt, system_prompt="你是严谨的需求验证审计师（教材§7）。请精确输出JSON。")
+    result = call_llm(prompt, system_prompt="你是严谨的需求验证审计师。你的职责是「对照证据源找出差异」，不创造内容、不做主观猜测。进行涉众对话比对时，执行语义等价判断而非关键词匹配。每个发现必须引用证据来源（REQ编号或涉众原话）。")
     data = extract_json(result)
-    verdict = data.get("verdict", "分析类问题")
+    verdict_raw = data.get("verdict", "修改后重新验证（分析类问题→回A2）")
     findings = data.get("findings", [])
+    # 兼容新旧 verdict 格式
+    if "通过" in verdict_raw and "修改" not in verdict_raw:
+        verdict = "通过"
+    elif "获取" in verdict_raw or "获取类" in verdict_raw:
+        verdict = "获取类问题"
+    else:
+        verdict = "分析类问题"
     rollback_reason = {
         "通过": "",
         "获取类问题": "A5_acquisition",
         "分析类问题": "A5_analysis",
     }.get(verdict, "A5_analysis")
+
+    # 版本号递增
+    doc_ver = state.get("doc_versions", {}).get("validation", 1)
 
     # 保存验证报告到知识库
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
@@ -1184,7 +1457,7 @@ SRS文档（完整）：
         f"| {f.get('type','')} | {f.get('severity','')} | {f.get('section','—')} | {f.get('description','')} | {f.get('suggestion','')} |"
         for f in findings
     ) if findings else "| — | — | — | 未发现问题 | — |"
-    vdoc = kb_frontmatter(f"需求验证报告-{ds}", ["验证", "SRS"], ["需求验证报告"]) + f"""# 需求验证报告
+    vdoc = kb_frontmatter(f"需求验证报告-{ds}-v{doc_ver}", ["验证", "SRS"], ["需求验证报告"]) + f"""# 需求验证报告
 
 验证日期：{ds}
 总体结论：**{verdict}**
@@ -1195,17 +1468,19 @@ SRS文档（完整）：
 |-----|---------|---------|---------|---------|
 {finding_rows}
 
-> 关联 [[SRS-初稿-{ds}-v1.0|SRS文档]] | [[需求清单-{ds}-v1.0|需求清单]]
+> 关联 [[SRS-初稿-{ds}-v{doc_ver}|SRS文档]] | [[需求清单-{ds}-v{doc_ver}|需求清单]]
 """
-    save_to_kb("wiki", f"需求验证报告-{ds}-v1.0.md", vdoc)
+    save_to_kb("wiki", f"需求验证报告-{ds}-v{doc_ver}.md", vdoc)
 
-    fire_progress(f"[SEARCH] A5: 验证完成 — 结论：{verdict}")
+    summary = data.get("summary", {})
+    fire_progress(f"[SEARCH] A5: 验证完成 — 结论：{verdict}（共{summary.get('total_issues', len(findings))}个问题：阻塞{summary.get('blocker', 0)}/重要{summary.get('major', 0)}/建议{summary.get('minor', 0)}）")
     fire_result("validation_report", result)
     fire_result("validation_verdict", verdict)
     return {
         "validation_report": result,
         "validation_verdict": verdict,
         "rollback_reason": rollback_reason,
+        "doc_versions": {**state.get("doc_versions", {}), "validation": doc_ver + 1},
     }
 
 
@@ -1299,12 +1574,13 @@ def a5_generate_defect_reports(state: RequirementState) -> dict:
         reports.append(report)
 
     all_reports = "\n\n---\n\n".join(reports)
+    doc_ver = state.get("doc_versions", {}).get("defect", 1)
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
-    save_to_kb("wiki", f"缺陷分析报告集-{ds}-v1.0.md",
+    save_to_kb("wiki", f"缺陷分析报告集-{ds}-v{doc_ver}.md",
                kb_frontmatter("缺陷分析报告集", ["缺陷", "质量保证"]) + all_reports)
     fire_progress("[OK] A5: 5份缺陷分析报告已生成")
     fire_result("defect_reports", all_reports)
-    return {"defect_reports": all_reports}
+    return {"defect_reports": all_reports, "doc_versions": {**state.get("doc_versions", {}), "defect": doc_ver + 1}}
 
 
 # ============================================================
@@ -1330,7 +1606,7 @@ def ccb_review(state: RequirementState) -> dict:
         verdict_text = result.get("verdict", "不通过(分析类)")
         comment = result.get("comment", "")
         fire_progress(f"[OK] CCB: 审批完成 — {verdict_text}")
-        return {
+        ccb_return = {
             "ccb_verdict": verdict_text,
             "ccb_comment": comment,
             "rollback_reason": {
@@ -1339,6 +1615,11 @@ def ccb_review(state: RequirementState) -> dict:
                 "不通过(分析类)": "CCB_analysis",
             }.get(verdict_text, "CCB_analysis"),
         }
+        # CCB不通过时重置全局计数，让A1/A5重新正常工作
+        if "不通过" in verdict_text:
+            ccb_return["iteration_count"] = 0
+            fire_progress("  ↻ CCB不通过，全局迭代计数已重置，A1/A2/A5恢复工作")
+        return ccb_return
     else:
         # ── 命令行模式：使用 input() ──
         print()
@@ -1364,24 +1645,21 @@ def ccb_review(state: RequirementState) -> dict:
                     "ccb_verdict": "不通过(获取类)",
                     "ccb_comment": input("请说明理由: "),
                     "rollback_reason": "CCB_acquisition",
+                    "iteration_count": 0,
                 }
             elif choice == "3":
                 return {
                     "ccb_verdict": "不通过(分析类)",
                     "ccb_comment": input("请说明理由: "),
                     "rollback_reason": "CCB_analysis",
+                    "iteration_count": 0,
                 }
             else:
                 print("无效输入，请输入 1、2 或 3")
 
 
 def ccb_decide_next(state: RequirementState) -> Literal["approve", "rollback_a1", "rollback_a2"]:
-    """CCB条件判断 — 全局迭代超限时终止回退"""
-    iteration_count = state.get("iteration_count", 0)
-    if iteration_count >= MAX_GLOBAL_ITERATIONS:
-        print(f"  [CCB] ⛔ 全局迭代已达上限({MAX_GLOBAL_ITERATIONS})，强制通过")
-        return "approve"
-
+    """CCB条件判断 — 人工审批不受全局迭代限制（人说不通过就必须回退）"""
     verdict = state.get("ccb_verdict", "不通过(分析类)")
     if "通过" in verdict:
         print("  [CCB] [OK] 审批通过 → 基线创立")
@@ -1404,10 +1682,10 @@ def a6_create_baseline(state: RequirementState) -> dict:
     fire_phase("A6_基线")
     fire_progress("⛔ A6: 正在创立基线并生成 RTM 溯源矩阵...")
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
-    version = f"BL-{ds}-01"
+    version = _next_baseline_version(ds)
 
     # ── 1. 生成 22 列 RTM 溯源矩阵 ──
-    rtm_prompt = f"""请根据以下资料生成需求溯源矩阵（RTM），严格遵循22列完整字段规范。
+    rtm_prompt = f"""请根据以下资料生成需求溯源矩阵（RTM），严格遵循需求溯源矩阵规范文档的22列字段规范。
 
 基线版本：{version}
 对比历史基线：初始基线，无历史版本
@@ -1416,23 +1694,38 @@ def a6_create_baseline(state: RequirementState) -> dict:
 SRS文档（摘要）：
 {state.get("srs_draft", "")[:10000]}
 
-需求清单：
+需求清单（含 BR/UR 编号）：
 {state.get("consolidated_requirements", "")}
 
-请输出22列RTM表格，格式为Markdown表格，严格包含以下22列（列名必须一字不差）：
-| 行号 | 业务需求ID(BR) | 业务目标描述 | 原始需求ID(UR) | 原始需求来源 | 原始需求全文 | 需求类型 | SRS需求ID | SRS需求名称 | SRS正式描述 | 验收标准 | 优先级 | 本次基线需求状态 | 变更来源 | 变更差异详情 | 变更影响范围 | 关联建模产物ID | 关联设计文档ID | 关联开发模块 | 数据字典关联ID | 关联测试用例ID | 验收状态 |
+请输出22列RTM表格，列名必须一字不差，严格按以下顺序：
 
-示例行（你必须在实际填写时将日期替换为当前日期、来源替换为实际涉众）：
-| 1 | BR-EQP-001 | 实现设备全生命周期管理 | UR-EQP-001 | 库房人员 | 系统应支持设备出库时自动生成配件清单 | 功能需求 | FR-EQP-001 | 配件清单管理 | 出库时根据模板生成配件清单 | 配件清单与设备型号绑定，逐项核对 | 高 | 新增 | 初始基线，无历史版本 | 初始基线，无历史版本 | 无 | UC-ELM-001 | DS-ELM-001 | 设备管理模块 | DD-EQP-001 | TC-EQP-001 | 待验收 |
+【上游业务溯源层 1-6】
+| 行号 | 业务需求ID(BR) | 业务目标描述 | 原始需求ID(UR) | 原始需求来源 | 原始需求全文 |
+
+【SRS正式需求层 7-12】
+| 需求类型 | SRS需求ID(FR) | SRS需求名称 | SRS正式描述 | 验收标准 | 需求优先级 |
+
+【基线比对差异层 13-16】
+| 本次基线需求状态 | 变更来源 | 变更差异详情 | 变更影响范围 |
+
+【设计开发追溯层 17-20】
+| 关联建模产物ID | 关联设计文档ID | 关联开发模块 | 数据字典关联ID |
+
+【测试验收追溯层 21-22】
+| 关联测试用例ID | 验收测试状态 |
+
+示例行：
+| 1 | BR-EQP-001 | 实现设备全生命周期管理 | UR-EQP-001 | 库房人员 |「设备出库时需要带配件清单」| 功能需求 | FR-EQP-001 | 配件清单管理 | 出库时根据模板生成配件清单 | 配件清单与设备型号绑定，逐项核对 | P0 | 新增 | 初始基线，无历史版本 | 初始基线，无历史版本 | 无 | UC-ELM-001 | 待第二阶段填充 | 待第二阶段填充 | DD-EQP-001 | 待第二阶段填充 | 待验收 |
 
 要求：
-1. 每个SRS中的功能需求对应一行，每行22列一个不落
-2. BR编号格式：BR-模块缩写-三位流水号；UR编号格式：UR-模块缩写-三位流水号
+1. BR/UR 编号从需求清单中直接取用，FR 编号从 SRS 中提取，三者一一对应
+2. 原始需求全文列必须完整引用需求清单中的「需求陈述」原文
 3. 需求类型：功能需求/非功能需求/接口需求
 4. 本次基线需求状态统一填「新增」
 5. 变更来源和变更差异详情填「初始基线，无历史版本」
-6. 每条需求必须可溯源（BR->UR->SRS）
-7. 至少生成5行以上（覆盖不同功能模块）"""
+6. 正向追溯链路：BR → UR → FR → 建模产物 → 设计 → 开发 → 测试
+7. 至少生成5行以上（覆盖不同功能模块）
+8. Phase 1 尚未产生的列（设计文档ID、开发模块、测试用例ID）填「待第二阶段填充」"""
 
     rtm = call_llm(rtm_prompt, system_prompt="你是配置管理专家，精通需求溯源矩阵（RTM）22列规范。输出内容中必须包含22列的Markdown表格。")
 
@@ -1533,7 +1826,7 @@ SRS文档（摘要）：
         save_to_kb("baselines", f"{version}/UML模型/行为模型图-{ds}.puml",
             kb_frontmatter(f"UML行为模型-{version}", ["UML", "基线"]) + _uml_ad)
     save_to_kb("baselines", f"{version}/RTM_{version}_需求溯源矩阵.md",
-        kb_frontmatter(f"溯源矩阵-{version}", ["RTM", "基线", "冻结"]) + rtm)
+        kb_frontmatter(f"RTM-{version}", ["RTM", "基线", "冻结"], [f"溯源矩阵-{version}"]) + rtm)
     save_to_kb("baselines", f"{version}/CCB_{version}_评审记录.md",
         kb_frontmatter(f"CCB评审记录-{version}", ["CCB", "评审", "基线"]) + ccb_record)
 
@@ -1559,7 +1852,6 @@ SRS文档（摘要）：
 - [OK] RTM：22列完整溯源矩阵
 - [OK] 需求编号：BR/UR/FR/NFR/IFR四级体系
 - [OK] CCB评审：正式评审记录归档
-- [OK] ADR-001架构决策记录：10字段完整规范
 - [OK] 全部需求状态标记为「新增」
 
 ## 变更管理
@@ -1573,114 +1865,24 @@ SRS文档（摘要）：
 """
     save_to_kb("baselines", f"{version}/基线报告.md", baseline_report)
 
+    # ── 需求差异文档（非初始基线时生成）──
+    baselines_dir = os.path.join(KB_ROOT, "wiki/baselines")
+    all_baselines = sorted([d for d in os.listdir(baselines_dir)
+                            if os.path.isdir(os.path.join(baselines_dir, d)) and d.startswith("BL-")])
+    if len(all_baselines) >= 2 and version in all_baselines:
+        idx = all_baselines.index(version)
+        if idx > 0:
+            old_version = all_baselines[idx - 1]
+            fire_progress(f"  → 生成需求差异文档：{old_version} → {version}")
+            diff_doc = _generate_diff(old_version, version, srs_final, rtm)
+            save_to_kb("baselines", f"{version}/DIFF_{version}_需求差异比对报告.md",
+                       kb_frontmatter(f"需求差异-{version}", ["差异", "变更管理"], [f"需求差异-{version}"]) + diff_doc)
+            fire_progress(f"  [OK] 需求差异文档已生成")
+
     fire_progress(f"[OK] A6: 基线 {version} 已创立！")
     fire_result("baseline_version", version)
     fire_result("rtm", rtm)
     return {"baseline_version": version, "rtm": rtm, "workflow_status": "基线已创立"}
-
-
-# ============================================================
-# 🧠 A7 ADR 架构决策记录生成
-# ============================================================
-
-def a7_generate_adr(state: RequirementState) -> dict:
-    """A7 架构决策记录生成 — 基于 SRS/UML/需求清单生成 ADR-001 架构选型决策"""
-    run_stop_checks()
-    fire_phase("A7_ADR")
-    fire_progress("[NOTE] A7: 正在生成 ADR-001 架构决策记录...")
-
-    version = state.get("baseline_version", datetime.now().strftime("BL-%Y%m%d-01"))
-    ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
-
-    prompt = f"""请根据以下项目资料，生成一份完整的 ADR（架构决策记录），严格遵循以下模板结构。
-
-项目名称：医疗器械租赁管理系统
-基线版本：{version}
-ADR编号：ADR-001
-决策分类：架构风格决策
-ADR标题：系统分层架构选型决策
-
-SRS文档（摘要）：
-{state.get("srs_draft", "")[:5000]}
-
-UML模型：
-{state.get("uml_use_case", "")[:1500]}
-
-需求清单（摘要）：
-{state.get("consolidated_requirements", "")[:3000]}
-
-请输出完整的 ADR 文档，必须包含以下10个核心字段（缺一不可）：
-
-# ADR-001：【决策完整标题】
-## 元数据
-- 决策编号：ADR-001
-- 决策分类：架构风格决策
-- 当前状态：已接受
-- 决策日期：【当前日期】
-- 生效基线：{version}
-- 关联ADR：无（初始基线）
-- 关联SRS-ID：FR-/NFR-/IFR- 相关编号
-- 关联RTM行号：对应行号
-
-## 1 背景与问题陈述
-[详细描述：医疗器械租赁管理系统需要选择适合的软件架构风格，满足4种角色（招商业务员、库房人员、运维工程师、财务）的业务需求，支撑合同管理、库存管理、运维管理、财务管理等7个核心模块。描述当前痛点、系统规模、非功能需求约束等]
-
-## 2 约束前提
-[列出不可突破的约束：如必须采用B/S架构、数据库MySQL 8.0+、Java/.NET Core技术栈等]
-
-## 3 备选方案比对
-| 方案名称 | 核心概述 | 优点 | 缺点 | 适配场景 | 风险成本 | 淘汰原因 |
-|---------|----------|------|------|----------|----------|----------|
-| 方案A：严格分层架构 | Controller-Service-Repository三层 | ... | ... | ... | ... | ... |
-| 方案B：领域驱动分层架构（DDD） | 四层：接口-应用-领域-基础设施 | ... | ... | ... | ... | ... |
-| 方案C：微服务架构 | 按业务域拆分为独立服务 | ... | ... | ... | ... | ... |
-
--- 必须提供至少3个备选方案 --
-
-## 4 最终决策
-[精准描述最终选定方案、落地范围、执行标准]
-
-## 5 决策理由
-[从业务长期演化、架构整洁性、AI适配性、维护成本、扩展性等角度阐述]
-
-## 6 后果与风险评估
-### 6.1 正向收益
-### 6.2 负面代价
-### 6.3 潜在风险
-### 6.4 风险应对预案
-
-## 7 AI适配约束规则
-[可直接写入提示词的结构化约束，明确AI生成代码的允许项、禁止项、强制规则]
-
-## 8 关联工程产物
-- 建模产物ID：
-- 设计文档章节：
-- 受影响开发模块：
-- 关联接口契约：
-- 关联数据字典：
-
-## 9 验收校验标准
-
-## 10 迭代与作废条件
-
-## 变更日志
-- 【当前日期】：初始创建"""
-
-    adr = call_llm(prompt, system_prompt="你是资深软件架构师，精通ADR架构决策记录规范。输出严格遵循10字段模板。", max_tokens=8000)
-
-    # 保存到知识库
-    adr_content = kb_frontmatter(f"ADR-001", ["ADR", "架构决策", "基线"], ["架构决策记录"]) + adr
-
-    # 保存到 wiki/summaries
-    save_to_kb("wiki", f"ADR-001-系统分层架构选型决策-{ds}.md", adr_content)
-
-    # 同时归档到基线目录（规范 §5.2 要求ADR随基线归档）
-    if state.get("baseline_version", ""):
-        save_to_kb("baselines", f"{version}/adr/ADR-001_系统分层架构选型决策.md", adr_content)
-
-    print("  [OK] [A7] ADR-001 已生成并归档")
-    fire_progress("[OK] A7: ADR-001 架构决策记录已生成")
-    return {"adr_documents": adr, "workflow_status": "完成"}
 
 
 # ============================================================
@@ -1701,14 +1903,13 @@ def build_workflow() -> StateGraph:
     # ── A2阶段 ──
     workflow.add_node("A2_需求分析", a2_analyze_quality)
 
-    # ── A3-A7 ──
+    # ── A3-A6 ──
     workflow.add_node("A3_UML建模", a3_generate_uml)
     workflow.add_node("A4_SRS生成", a4_generate_srs)
     workflow.add_node("A5_验证", a5_validate_srs)
     workflow.add_node("A5_缺陷分析报告", a5_generate_defect_reports)
     workflow.add_node("CCB_审批", ccb_review)
     workflow.add_node("A6_基线创立", a6_create_baseline)
-    workflow.add_node("A7_ADR生成", a7_generate_adr)
 
     # ── 入口 ──
     workflow.set_entry_point("A1_并行涉众对话")
@@ -1758,11 +1959,8 @@ def build_workflow() -> StateGraph:
         },
     )
 
-    # ── A6 → A7 ──
-    workflow.add_edge("A6_基线创立", "A7_ADR生成")
-
-    # ── A7结束 ──
-    workflow.add_edge("A7_ADR生成", END)
+    # ── A6 → END ──
+    workflow.add_edge("A6_基线创立", END)
 
     return workflow
 
@@ -1774,7 +1972,7 @@ def build_workflow() -> StateGraph:
 def main():
     print("=" * 60)
     print("[HOSP] 医疗器械租赁管理系统 — 需求工程工作流 v3")
-    print("    (多Agent协作：A1涉众Agent + A2分析 + A3建模 + A4+SRS + A5验证 + CCB + A6基线 + A7 ADR)")
+    print("    (多Agent协作：A1涉众Agent + A2分析 + A3建模 + A4 SRS + A5验证 + CCB + A6基线)")
     print("=" * 60)
     print()
     print(f"  LLM: {LLM_API_URL}  |  模型: {LLM_MODEL}")
@@ -1816,6 +2014,7 @@ def main():
         "iteration_count": 0,
         "workflow_status": "启动",
         "force_forward": False,
+        "doc_versions": {"req_list": 1, "issues": 1, "uml": 1, "srs": 1, "validation": 1, "defect": 1},
     }
 
     print("[START] 启动工作流...\n")
@@ -1849,8 +2048,7 @@ def main():
     print(f"  5. [OK] SRS规格说明书    → wiki/summaries/")
     print(f"  6. [OK] 需求验证报告    → wiki/summaries/")
     print(f"  7. [OK] 5份缺陷分析报告  → wiki/summaries/")
-    print(f"  8. [OK] 基线{result.get('baseline_version', 'N/A')} + RTM  + ADR-001→ wiki/baselines/")
-    print(f"  9. [OK] ADR-001架构决策记录 → wiki/summaries/")
+    print(f"  8. [OK] 基线{result.get('baseline_version', 'N/A')} + RTM → wiki/baselines/")
     print()
     print(f"[DIR] Obsidian 知识库: {KB_ROOT}")
     print("[INFO] 在 Obsidian 中打开 .claude/knowledge-base/ 即可浏览")

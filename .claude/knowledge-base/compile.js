@@ -67,7 +67,7 @@ if (!fs.existsSync(archiveDir)) {
 console.log('\n📝 [2/4] 文件命名规范检查...');
 
 const timestampPattern = /^.+-\d{8}-\d{4}[-\.]/;         // 招商业务员-20260622-1205-需求记录.md
-const versionPattern = /^.+-v\d+\.\d+\.md$/;             // SRS-初稿-v2.3.md
+const versionPattern = /^.+-v\d+(\.\d+)?\.md$/;           // SRS-初稿-v2.3.md 或 需求清单-20260626-v1.md
 
 let nameIssues = 0;
 
@@ -182,22 +182,96 @@ let baselineIssues = 0;
 
 if (fs.existsSync(baselinesDir)) {
   const baselines = fs.readdirSync(baselinesDir, { withFileTypes: true })
-    .filter(d => d.isDirectory() && d.name.startsWith('BL-'));
+    .filter(d => d.isDirectory() && d.name.startsWith('BL-'))
+    .sort((a, b) => b.name.localeCompare(a.name));  // 最新基线在前
 
   if (baselines.length === 0) {
     console.log('  ⚠️ [提示] 暂无基线目录（基线未创立时正常）');
   } else {
-    for (const bl of baselines) {
-      const blPath = path.join(baselinesDir, bl.name);
-      const blFiles = fs.readdirSync(blPath).filter(f => f.endsWith('.md'));
+    const latestBL = baselines[0];
+    const blPath = path.join(baselinesDir, latestBL.name);
 
-      if (blFiles.length === 0) {
-        console.warn(`  ⚠️ [警告] 基线目录 ${bl.name} 为空`);
-        baselineIssues++;
+    // 基线 → summaries 文档对应关系
+    const docMap = [
+      { blPattern: /SRS-正式版/, summaryPattern: /SRS-初稿/, name: 'SRS' },
+      { blPattern: /需求清单/,    summaryPattern: /需求清单/,     name: '需求清单' },
+    ];
+
+    for (const { blPattern, summaryPattern, name } of docMap) {
+      // 在基线目录中查找对应文件
+      const blFiles = fs.readdirSync(blPath).filter(f => blPattern.test(f));
+      const blFile = blFiles.length > 0 ? path.join(blPath, blFiles[0]) : null;
+
+      // 在 summaries 目录中查找最新版本
+      const summariesDir = path.join(vaultRoot, 'wiki/summaries');
+      let summaryFile = null;
+      if (fs.existsSync(summariesDir)) {
+        const matches = fs.readdirSync(summariesDir)
+          .filter(f => summaryPattern.test(f))
+          .sort((a, b) => b.localeCompare(a));  // 最新版本在前
+        summaryFile = matches.length > 0 ? path.join(summariesDir, matches[0]) : null;
+      }
+
+      if (blFile && summaryFile && fs.existsSync(blFile) && fs.existsSync(summaryFile)) {
+        // 比对核心内容（取前2000字，排除日期/版本号等元数据差异）
+        const blContent = fs.readFileSync(blFile, 'utf-8')
+          .replace(/\d{8}/g, '')      // 去日期
+          .replace(/v\d+(\.\d+)?/g, '')  // 去版本号
+          .substring(0, 2000);
+        const summaryContent = fs.readFileSync(summaryFile, 'utf-8')
+          .replace(/\d{8}/g, '')
+          .replace(/v\d+(\.\d+)?/g, '')
+          .substring(0, 2000);
+
+        if (blContent === summaryContent) {
+          console.log(`  ✅ ${name}: 基线 ↔ summaries 一致`);
+        } else {
+          console.warn(`  ⚠️ [警告] ${name}: summaries 版本与基线不一致，可能已被修改但未创立新基线`);
+          baselineIssues++;
+        }
+      } else if (blFile && !summaryFile) {
+        console.log(`  ⚠️ [提示] ${name}: summaries 中无对应文件（已基线化，正常）`);
+      } else if (!blFile && summaryFile) {
+        console.log(`  ⚠️ [提示] ${name}: summaries 存在但基线中无对应文件`);
       } else {
-        console.log(`  ✅ 基线 ${bl.name} 含 ${blFiles.length} 个文档`);
+        console.log(`  ⚠️ [提示] ${name}: 未找到基线或 summaries 文件`);
+      }
+
+      // 检查基线 SRS 内部一致性：关键章节是否存在
+      if (blFile && name === 'SRS') {
+        const srsContent = fs.readFileSync(blFile, 'utf-8');
+        const requiredSections = ['# 1', '# 2', '# 3', '# 4', '修订历史记录'];
+        for (const section of requiredSections) {
+          if (!srsContent.includes(section)) {
+            console.warn(`  ⚠️ [警告] SRS 缺少关键章节: ${section}`);
+            baselineIssues++;
+          }
+        }
+        // 检查 Mermaid 架构图
+        if (srsContent.includes('flowchart') || srsContent.includes('graph TD')) {
+          console.log('  ✅ SRS 含系统架构图（Mermaid）');
+        } else {
+          console.warn('  ⚠️ [警告] SRS 缺少系统架构图（Mermaid 代码）');
+          baselineIssues++;
+        }
+        // 检查 E-R 图
+        if (srsContent.includes('erDiagram')) {
+          console.log('  ✅ SRS 含 E-R 图（Mermaid erDiagram）');
+        } else {
+          console.warn('  ⚠️ [警告] SRS 缺少 E-R 图（Mermaid erDiagram）');
+          baselineIssues++;
+        }
+        // 检查 PlantUML 用例图
+        if (srsContent.includes('@startuml') && srsContent.includes('@enduml')) {
+          console.log('  ✅ SRS 含用例图（PlantUML）');
+        } else {
+          console.warn('  ⚠️ [警告] SRS 缺少用例图（PlantUML 代码）');
+          baselineIssues++;
+        }
       }
     }
+
+    console.log(`  ✅ 基线 ${latestBL.name} 检查完成（${latestBL.name} 个文档对比）`);
   }
 } else {
   console.log('  ⚠️ [提示] baselines 目录不存在（基线未创立时正常）');

@@ -1,0 +1,280 @@
+@startuml
+|招商业务员|
+start
+:创建租赁合同;
+:提交合同审核;
+
+|招商业务主管|
+if (审核合同?) then (通过)
+  :合同生效;
+else (不通过)
+  :退回修改;
+  stop
+endif
+
+|招商业务员|
+:发起出库指令;
+
+|库房人员|
+:执行实物出库;
+:记录附件状态;
+
+|运维工程师|
+:执行出库前技术复核;
+if (复核通过?) then (是)
+  :生成复核报告;
+else (否)
+  :生成异常工单;
+  stop
+endif
+
+|客户|
+:现场验收设备;
+if (验收通过?) then (是)
+  :签署《设备验收单》;
+else (否)
+  :记录异常，发起维修/赔偿;
+  stop
+endif
+
+|招商业务员|
+:租赁期监控;
+if (到期?) then (是)
+  :发起到期收回流程;
+else (否)
+  if (续租?) then (是)
+    :签署补充协议;
+    :重新计算费用;
+  else (提前退租)
+    :签署补充协议;
+    :重新计算费用;
+  endif
+endif
+
+|库房人员|
+:执行设备收回;
+:归还验收;
+
+if (验收通过?) then (是)
+  :费用结清;
+  :押金退还;
+  :项目完成;
+else (否)
+  :记录异常，发起维修/赔偿;
+  stop
+endif
+
+stop
+
+@enduml
+
+@startuml
+|库房人员|
+start
+:设备到货;
+:创建入库单;
+:设备初始状态设为“待验收”;
+
+|运维工程师|
+:执行安装调试;
+:创建安装调试记录;
+
+if (设备类型?) then (简单设备)
+  |库房人员|
+  :按预设模板进行验收;
+else (复杂设备)
+  |运维工程师|
+  :按向导式流程分步验收;
+endif
+
+if (验收结果?) then (正常)
+  :设备状态更新为“在库”;
+else (异常)
+  :记录异常信息(照片、描述等);
+  :设备状态标记为“验收异常”;
+  :触发异常处理流程;
+  stop
+endif
+
+|库房人员|
+:设备上架;
+:更新设备台账;
+stop
+
+@enduml
+
+@startuml
+|运维工程师|
+start
+:巡检/使用中发现故障;
+:一键发起故障报修;
+:关联设备、备注、照片;
+
+|运维主管|
+:接收报修工单;
+:评估故障等级;
+if (是否可自行维修?) then (是)
+  :派单给指定工程师;
+else (否)
+  :发起第三方维修申请;
+  :等待审批;
+endif
+
+|运维工程师|
+:执行维修;
+:记录维修过程(故障现象、诊断、方案);
+:记录配件更换信息;
+
+|运维主管|
+:维修完成验收;
+if (验收通过?) then (是)
+  :更新维修知识库;
+  :设备状态更新为“在库”;
+else (否)
+  :退回返修;
+  stop
+endif
+
+|库房人员|
+:更新设备台账;
+:归档维修记录;
+stop
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+participant "合同控制器" as ContractController
+participant "合同服务" as ContractService
+participant "设备服务" as EquipmentService
+participant "客户服务" as CustomerService
+database "合同仓库" as ContractRepo
+database "设备仓库" as EquipmentRepo
+database "客户仓库" as CustomerRepo
+
+Sales -> ContractController: 创建租赁合同(客户ID, 设备清单, 租期)
+activate ContractController
+
+ContractController -> ContractService: 创建合同请求(客户ID, 设备清单, 租期)
+activate ContractService
+
+ContractService -> CustomerService: 验证客户信息(客户ID)
+activate CustomerService
+CustomerService -> CustomerRepo: 查询客户(客户ID)
+CustomerRepo --> CustomerService: 返回客户信息
+CustomerService --> ContractService: 客户信息有效
+deactivate CustomerService
+
+ContractService -> EquipmentService: 检查设备可用性(设备清单)
+activate EquipmentService
+EquipmentService -> EquipmentRepo: 查询设备状态(设备ID列表)
+EquipmentRepo --> EquipmentService: 返回设备状态列表
+
+alt 所有设备可用
+  EquipmentService --> ContractService: 设备可用
+else 部分设备不可用
+  EquipmentService --> ContractService: 返回不可用设备列表
+  ContractService --> ContractController: 返回错误(设备不可用)
+  ContractController --> Sales: 显示错误信息
+  deactivate ContractService
+  deactivate ContractController
+  end
+end
+deactivate EquipmentService
+
+ContractService -> ContractService: 计算租金方案
+ContractService -> ContractRepo: 保存合同(合同对象)
+activate ContractRepo
+ContractRepo --> ContractService: 返回合同ID
+deactivate ContractRepo
+
+ContractService --> ContractController: 合同创建成功(合同ID)
+deactivate ContractService
+
+ContractController --> Sales: 显示合同创建成功
+deactivate ContractController
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+!define primary_key(x) <u>x</u>
+!define foreign_key(x) <i>x</i>
+
+table(设备) {
+  + primary_key(设备ID) : int
+  + 品牌型号 : varchar
+  + 出厂编号 : varchar
+  + 注册证号 : varchar
+  + 库位 : varchar
+  + 校准日期 : date
+  + 有效期 : date
+  + 设备状态 : varchar
+  + 采购成本 : decimal
+  + 折旧年限 : int
+}
+
+table(客户) {
+  + primary_key(客户ID) : int
+  + 客户名称 : varchar
+  + 联系人 : varchar
+  + 联系电话 : varchar
+  + 医院等级 : varchar
+  + 风险等级 : varchar
+  + 地址 : varchar
+}
+
+table(租赁订单) {
+  + primary_key(订单ID) : int
+  + foreign_key(合同ID) : int
+  + foreign_key(客户ID) : int
+  + 订单日期 : date
+  + 租赁开始日期 : date
+  + 租赁结束日期 : date
+  + 订单状态 : varchar
+  + 总租金 : decimal
+}
+
+table(合同) {
+  + primary_key(合同ID) : int
+  + foreign_key(客户ID) : int
+  + 合同编号 : varchar
+  + 合同金额 : decimal
+  + 押金金额 : decimal
+  + 签署日期 : date
+  + 生效日期 : date
+  + 合同状态 : varchar
+}
+
+table(费用记录) {
+  + primary_key(费用ID) : int
+  + foreign_key(订单ID) : int
+  + 费用类型 : varchar
+  + 金额 : decimal
+  + 发生日期 : date
+  + 核销状态 : varchar
+  + 发票号 : varchar
+}
+
+table(维修记录) {
+  + primary_key(维修ID) : int
+  + foreign_key(设备ID) : int
+  + 报修人 : varchar
+  + 报修日期 : date
+  + 故障描述 : text
+  + 维修方案 : text
+  + 更换配件 : varchar
+  + 维修成本 : decimal
+  + 维修状态 : varchar
+}
+
+' 定义关系
+设备 ||--o{ 租赁订单 : "包含"
+客户 ||--o{ 租赁订单 : "拥有"
+客户 ||--o{ 合同 : "签署"
+合同 ||--o{ 租赁订单 : "关联"
+租赁订单 ||--o{ 费用记录 : "产生"
+设备 ||--o{ 维修记录 : "关联"
+
+
+@enduml
