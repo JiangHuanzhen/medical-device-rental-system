@@ -1,0 +1,97 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ===== 第一步：Actor 定义 =====
+actor "招商业务员" as Salesman
+actor "库房人员" as Warehouse
+actor "运维工程师" as OpsEngineer
+actor "系统" as System
+
+' ===== 第二步：用例定义 =====
+rectangle "设备管理" {
+  ' --- 核心用例 ---
+  usecase "管理校准预警" as UC1
+  usecase "执行紧急出库审批" as UC2
+  usecase "执行设备归还检测" as UC3
+  usecase "管理出库前检测" as UC4
+  usecase "管理设备状态变更" as UC5
+  usecase "管理维修工单" as UC6
+  usecase "管理检测模板" as UC7
+  usecase "管理预警推送配置" as UC8
+
+  ' --- include/extend 用例 ---
+  usecase "验证设备校准状态" as INC1
+  usecase "记录检测结果" as INC2
+  usecase "触发维修工单创建" as EXT1
+  usecase "触发校准预警通知" as EXT2
+}
+
+' ===== 第三步：Actor-用例关联 =====
+Salesman --> UC1
+Salesman --> UC2
+Salesman --> UC3
+Salesman --> UC5
+
+Warehouse --> UC2
+Warehouse --> UC3
+Warehouse --> UC4
+Warehouse --> UC5
+
+OpsEngineer --> UC4
+OpsEngineer --> UC6
+OpsEngineer --> UC7
+OpsEngineer --> UC8
+
+System --> UC1
+System --> UC8
+
+' ===== include/extend 关系 =====
+UC2 .> INC1 : <<include>>
+UC3 .> INC2 : <<include>>
+UC3 ..> EXT1 : <<extend>>
+UC1 ..> EXT2 : <<extend>>
+
+' ===== 注解 =====
+note right of Salesman
+  **Actor映射决策**
+  招商业务员：主动发起预警查看、紧急出库、归还检测
+  库房人员：执行审批、复核检测、出库前检测
+  运维工程师：管理检测模板、维修工单、预警配置
+  系统：自动执行定时任务（预警扫描、通知推送）
+end note
+
+note bottom of UC1
+  **用例合并理由**
+  BR-EQP-001/003/009/015 均围绕校准预警
+  合并为"管理校准预警"以保持业务完整性
+  不同触发条件（7天/3天/30天）作为内部规则
+end note
+
+note bottom of UC3
+  **用例合并理由**
+  BR-EQP-005/006/008/010/011/012/013/014
+  均属于归还检测流程的不同环节
+  合并为单一用例，通过include/extend处理子流程
+end note
+
+note bottom of EXT1
+  **扩展点说明**
+  当归还检测数据偏差过大时
+  自动终结当前检测流程并创建维修工单
+  （对应BR-EQP-010/012）
+end note
+
+note bottom of EXT2
+  **扩展点说明**
+  当设备校准到期前30/15/7天时
+  触发单独预警通知
+  （对应BR-EQP-009）
+end note
+
+@enduml
+```
+@enduml

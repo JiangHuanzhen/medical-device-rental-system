@@ -1,166 +1,208 @@
 @startuml
-|库房人员|
+|#LightBlue|招商业务员|
 start
-:扫描设备条码，发起归还验收;
-|#LightBlue|运维工程师|
-:执行设备主体检测;
-:执行附件核验;
-fork
-  :记录主体检测结果;
-fork again
-  :记录附件核验结果;
-end fork
-|#LightBlue|系统|
-:收集检测与核验数据;
-if (主体是否有故障?) then ([是])
-  :判定主状态为“维修”;
-  :生成维修工单;
-  if (附件是否缺失?) then ([是])
-    :标记“附件缺失”;
-    :生成备件补充申请;
-  else ([否])
-    :无附件问题;
-  endif
-else ([否])
-  if (附件是否缺失?) then ([是])
-    :标记“附件缺失”;
-    :生成备件补充申请;
-    :判定主状态为“在库”;
-  else ([否])
-    :判定主状态为“在库”;
-  endif
+:发起紧急出库申请;
+note right: 选择校准过期设备\n填写使用科室、预计归还时间等
+|#LightGreen|系统|
+:校验设备状态;
+if (设备是否已锁定?) then (是)
+  :生成“紧急放行”审批单;
+  :记录申请信息;
+  |#LightBlue|招商业务员|
+  :提交审批单;
+else (否)
+  |#LightBlue|招商业务员|
+  :提示“设备未锁定，\n请使用常规出库流程”;
+  stop
 endif
-:更新设备状态及标记;
-|库房人员|
-:确认验收完成;
+
+|#LightYellow|科室主任|
+:审批申请;
+if (是否同意?) then (是)
+  :签字确认;
+else (否)
+  :驳回申请;
+  |#LightBlue|招商业务员|
+  :收到驳回通知;
+  stop
+endif
+
+|#LightCyan|库房主管|
+:审批申请;
+if (是否同意?) then (是)
+  :签字确认;
+else (否)
+  :驳回申请;
+  |#LightBlue|招商业务员|
+  :收到驳回通知;
+  stop
+endif
+
+|#LightPink|质控部门|
+:审批申请;
+if (是否同意?) then (是)
+  :签字确认;
+else (否)
+  :驳回申请;
+  |#LightBlue|招商业务员|
+  :收到驳回通知;
+  stop
+endif
+
+|#LightGreen|系统|
+:生成追溯编号;
+:更新设备状态为“紧急出库”;
+|#LightBlue|招商业务员|
+:设备出库;
 stop
 
 @enduml
 
 @startuml
-|库房人员|
+|#LightBlue|招商业务员|
 start
-:扫描设备条码，发起出库申请;
-|#LightBlue|系统|
-:校验设备状态是否为“在库”?;
-if (状态为“在库”?) then ([是])
-  :校验证书有效期;
-  if (证书在有效期内?) then ([是])
-    :允许出库;
-    :更新设备状态为“出租”;
-    |库房人员|
-    :完成出库;
-    stop
-  else ([否])
-    :触发“证书过期”拦截;
-    :提示“证书已过期，无法出库”;
-  endif
-else ([否])
-  :触发“状态异常”拦截;
-  :提示“设备非在库状态，无法出库”;
+:发起设备归还申请;
+|#LightGreen|系统|
+:校验设备信息;
+if (设备是否已出租?) then (是)
+  :加载设备出厂基准数据;
+else (否)
+  |#LightBlue|招商业务员|
+  :提示“设备状态异常，\n无法执行归还流程”;
+  stop
 endif
-|库房人员|
-:发起“紧急出库”特批申请;
-|#LightBlue|系统|
-:生成《设备状态异常出库声明》;
-:发送审批请求至总监及运维负责人;
-|总监|
-if (审批通过?) then ([是])
-  |运维负责人|
-  if (双签通过?) then ([是])
-    |#LightBlue|系统|
-    :记录风险声明及审批记录;
-    :强制允许出库;
-    :更新设备状态为“出租”;
-    |库房人员|
-    :完成紧急出库;
-    stop
-  else ([否])
-    :流程终止;
-    stop
+
+|#LightCyan|库房人员|
+:执行标准化检测;
+fork
+  :检测功能参数;
+  fork again
+  :检测外观附件;
+end fork
+
+|#LightGreen|系统|
+:自动比对检测结果与出厂参数;
+if (偏差是否超出阈值?) then (是)
+  :标记设备为“异常”;
+  :阻止完成正常收回流程;
+  |#LightCyan|库房人员|
+  :发起“设备状态异常处理单”;
+  if (是否需要维修?) then (是)
+    :安排维修;
+  else (否)
+    if (是否需要降级?) then (是)
+      :执行降级处理;
+    else (否)
+      :执行报废处理;
+    endif
   endif
-else ([否])
-  :流程终止;
+  stop
+else (否)
+  |#LightGreen|系统|
+  :更新设备状态为“已归还”;
+  :记录检测数据;
+  |#LightBlue|招商业务员|
+  :完成归还流程;
   stop
 endif
 
 @enduml
 
 @startuml
-|#LightBlue|系统|
+|#LightGreen|系统|
 start
-:定时任务触发，扫描所有设备;
-:获取设备类别及其校准预警天数;
-:计算每个设备证书到期日与当前日期的差值;
-if (差值 <= 预警天数?) then ([是])
-  :生成“校准预警”通知;
-  :发送通知给运维工程师;
-else ([否])
-  :无操作;
+:扫描所有设备校准有效期;
+if (设备是否在预警范围内?) then (是)
+  if (距离到期日 <= 30天?) then (是)
+    :触发“到期前30天”提醒;
+  else (否)
+    if (距离到期日 <= 15天?) then (是)
+      :触发“到期前15天”提醒;
+    else (否)
+      if (距离到期日 <= 7天?) then (是)
+        :触发“到期前7天”提醒;
+      else (否)
+        :无操作;
+        stop
+      endif
+    endif
+  endif
+else (否)
   stop
 endif
-|运维工程师|
-:接收预警通知;
-:查看设备详情及证书信息;
-if (是否需要立即校准?) then ([是])
-  :发起校准申请;
-  |#LightBlue|系统|
-  :更新设备状态为“校准”;
-  :生成校准工单;
-  |运维工程师|
-  :执行校准流程;
-  :更新校准证书信息;
-  |#LightBlue|系统|
-  :更新设备状态回“在库”;
-  stop
-else ([否])
-  :标记为“暂不处理”;
-  :设置下次提醒时间;
-  stop
-endif
+
+|#LightGreen|系统|
+:生成预警通知;
+fork
+  |#LightCyan|库房人员|
+  :接收预警通知;
+  fork again
+  |#LightPink|校准组|
+  :接收预警通知;
+  fork again
+  |#LightBlue|招商业务员|
+  :接收预警通知;
+end fork
+
+|#LightCyan|库房人员|
+:安排送检计划;
+|#LightPink|校准组|
+:执行校准;
+|#LightBlue|招商业务员|
+:协调客户时间;
+|#LightGreen|系统|
+:更新设备校准状态;
+stop
 
 @enduml
 
 @startuml
-actor 库房人员 as WH
-participant "归还验收界面" as UI
-participant "归还验收Controller" as Controller
-participant "设备Service" as Service
-participant "设备Repository" as Repository
-participant "工单Repository" as WO_Repo
+actor "招商业务员" as Sales
+actor "科室主任" as Director
+actor "库房主管" as Manager
+actor "质控部门" as QC
+participant "Controller" as Ctrl
+participant "Service" as Svc
+participant "Repository" as Repo
 
-WH -> UI: 扫描设备条码
-UI -> Controller: submitReturnInspection(deviceCode)
-Controller -> Service: inspectDevice(deviceCode)
-Service -> Repository: findDeviceByCode(deviceCode)
-Repository --> Service: device
-Service -> Service: performMainBodyCheck(device)
-Service -> Service: performAccessoryCheck(device)
+Sales -> Ctrl: 发起紧急出库申请(设备ID, 原因)
+Ctrl -> Svc: createEmergencyRelease(设备ID, 原因)
+Svc -> Repo: findDeviceById(设备ID)
+Repo --> Svc: 返回设备信息
+Svc -> Repo: createApproval(设备ID, 原因)
+Repo --> Svc: 返回审批单ID
+Svc --> Ctrl: 返回审批单ID
+Ctrl --> Sales: 显示审批单，等待审批
 
-alt 主体有故障
-  Service -> Service: setMainStatus("维修")
-  Service -> WO_Repo: createRepairWorkOrder(device)
-  alt 附件有缺失
-    Service -> Service: setAccessoryMissingFlag(true)
-    Service -> WO_Repo: createSparePartRequest(device)
-  else 附件无缺失
-    Service -> Service: setAccessoryMissingFlag(false)
-  end
-else 主体无故障
-  Service -> Service: setMainStatus("在库")
-  alt 附件有缺失
-    Service -> Service: setAccessoryMissingFlag(true)
-    Service -> WO_Repo: createSparePartRequest(device)
-  else 附件无缺失
-    Service -> Service: setAccessoryMissingFlag(false)
-  end
+Director -> Ctrl: 审批(审批单ID, 同意)
+Ctrl -> Svc: approve(审批单ID, 角色, 结果)
+Svc -> Repo: updateApprovalStatus(审批单ID, "科室主任", 同意)
+Repo --> Svc: 更新成功
+
+Manager -> Ctrl: 审批(审批单ID, 同意)
+Ctrl -> Svc: approve(审批单ID, 角色, 结果)
+Svc -> Repo: updateApprovalStatus(审批单ID, "库房主管", 同意)
+Repo --> Svc: 更新成功
+
+QC -> Ctrl: 审批(审批单ID, 同意)
+Ctrl -> Svc: approve(审批单ID, 角色, 结果)
+Svc -> Repo: updateApprovalStatus(审批单ID, "质控部门", 同意)
+Repo --> Svc: 更新成功
+
+Svc -> Repo: updateDeviceStatus(设备ID, "紧急出库")
+Repo --> Svc: 更新成功
+Svc --> Ctrl: 返回审批完成
+Ctrl --> Sales: 通知审批通过，可出库
+
+alt 审批被驳回
+  Director -> Ctrl: 审批(审批单ID, 驳回)
+  Ctrl -> Svc: approve(审批单ID, 角色, 驳回)
+  Svc -> Repo: updateApprovalStatus(审批单ID, "科室主任", 驳回)
+  Repo --> Svc: 更新成功
+  Svc --> Ctrl: 返回驳回结果
+  Ctrl --> Sales: 通知审批被驳回
 end
 
-Service -> Repository: updateDevice(device)
-Repository --> Service: success
-Service --> Controller: returnInspectionResult(result)
-Controller --> UI: displayResult(result)
-UI --> WH: 显示验收结果
 
 @enduml
 
@@ -168,65 +210,83 @@ UI --> WH: 显示验收结果
 !define table(x) class x << (T,#FFAAAA) >>
 
 table(设备) {
-  + 设备ID : UUID <<PK>>
+  + 设备ID: UUID [PK]
   --
-  设备编码 : VARCHAR(50) <<UK>>
-  设备名称 : VARCHAR(100)
-  设备类别ID : UUID <<FK>>
-  当前主状态 : ENUM(在库, 出租, 维修, 校准, 报废)
-  附件缺失标记 : BOOLEAN
-  当前过渡标签 : ENUM(已归还-待入库, 已归还-需维修)
+  设备名称: String
+  设备型号: String
+  出厂编号: String
+  设备状态: String (在库/已出租/维修中/报废)
+  当前客户ID: UUID [FK]
+  价值: Decimal
 }
 
-table(设备类别) {
-  + 类别ID : UUID <<PK>>
+table(校准记录) {
+  + 校准记录ID: UUID [PK]
   --
-  类别名称 : VARCHAR(100)
-  校准预警天数 : INT
+  设备ID: UUID [FK]
+  校准日期: Date
+  校准有效期: Date
+  校准结果: String (合格/不合格)
+  校准机构: String
 }
 
-table(校准证书) {
-  + 证书ID : UUID <<PK>>
+table(紧急出库审批单) {
+  + 审批单ID: UUID [PK]
   --
-  设备ID : UUID <<FK>>
-  证书编号 : VARCHAR(50)
-  有效期至 : DATE
+  设备ID: UUID [FK]
+  申请原因: String
+  申请时间: DateTime
+  审批状态: String (待审批/已通过/已驳回)
+  追溯编号: String
 }
 
-table(归还检查记录) {
-  + 记录ID : UUID <<PK>>
+table(审批节点) {
+  + 节点ID: UUID [PK]
   --
-  设备ID : UUID <<FK>>
-  检查时间 : DATETIME
-  主体检测结果 : TEXT
-  附件核验结果 : TEXT
-  检查人ID : UUID <<FK>>
+  审批单ID: UUID [FK]
+  审批角色: String (科室主任/库房主管/质控部门)
+  审批人: String
+  审批结果: String (同意/驳回)
+  审批时间: DateTime
+  审批意见: String
 }
 
-table(维修工单) {
-  + 工单ID : UUID <<PK>>
+table(归还检测记录) {
+  + 检测记录ID: UUID [PK]
   --
-  设备ID : UUID <<FK>>
-  工单类型 : ENUM(主体维修, 备件补充)
-  创建时间 : DATETIME
-  状态 : ENUM(待处理, 处理中, 已完成)
+  设备ID: UUID [FK]
+  检测时间: DateTime
+  检测人: String
+  检测结果: String (正常/异常)
+  异常描述: String
+  处理方案: String (维修/降级/报废)
 }
 
-table(紧急出库申请) {
-  + 申请ID : UUID <<PK>>
+table(设备出厂参数) {
+  + 参数ID: UUID [PK]
   --
-  设备ID : UUID <<FK>>
-  申请原因 : TEXT
-  风险声明 : TEXT
-  审批状态 : ENUM(待审批, 已通过, 已拒绝)
-  总监审批人ID : UUID <<FK>>
-  运维负责人审批人ID : UUID <<FK>>
+  设备ID: UUID [FK]
+  参数名称: String (如传感器灵敏度)
+  基准值: String
+  阈值: String (如 ±5%)
 }
 
-设备 }o-d- 设备类别 : "属于"
-设备 ||--o{ 校准证书 : "持有"
-设备 ||--o{ 归还检查记录 : "关联"
-设备 ||--o{ 维修工单 : "关联"
-设备 ||--o{ 紧急出库申请 : "关联"
+table(预警通知) {
+  + 通知ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  通知类型: String (临期/到期)
+  通知时间: DateTime
+  通知对象: String (库房/校准组/业务部门)
+  是否已读: Boolean
+}
+
+设备 ||--o{ 校准记录 : "有"
+设备 ||--o{ 紧急出库审批单 : "发起"
+设备 ||--o{ 归还检测记录 : "关联"
+设备 ||--o{ 设备出厂参数 : "定义"
+设备 ||--o{ 预警通知 : "触发"
+紧急出库审批单 ||--o{ 审批节点 : "包含"
+
 
 @enduml

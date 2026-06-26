@@ -1,0 +1,106 @@
+@startuml
+```plantuml
+@startuml
+' 设备租赁管理系统 - 用例图
+
+' 定义Actor
+actor "库房人员" as WH
+actor "运维工程师" as OE
+actor "招商业务员" as BM
+actor "财务人员" as FIN
+actor "审批角色" as APPR
+
+' 定义用例
+' 设备管理相关用例
+usecase (UC1: 管理设备校准预警\n对所有状态设备进行统一校准预警) as UC1
+usecase (UC2: 执行紧急出库\n支持即将到期设备有条件紧急出库) as UC2
+usecase (UC3: 执行设备归还检测\n使用统一检测清单进行归还检测) as UC3
+usecase (UC4: 执行出库前检测\n使用标准化检测清单进行出库前检测) as UC4
+usecase (UC5: 管理检测清单\n配置归还/出库检测清单及抽检比例) as UC5
+usecase (UC6: 管理租赁合同\n录入合同并校验发票与资料) as UC6
+usecase (UC7: 处理紧急出库审批\n执行三方会签审批流程) as UC7
+usecase (UC8: 处理设备状态异常\n处理归还时校准过期等异常) as UC8
+usecase (UC9: 管理计费模型\n配置多种计费方式) as UC9
+usecase (UC10: 处理押金扣款\n按金额阈值执行差异化扣款流程) as UC10
+
+' 建立Actor与用例关联
+WH --> UC1
+WH --> UC2
+WH --> UC3
+WH --> UC8
+OE --> UC4
+OE --> UC5
+BM --> UC6
+BM --> UC9
+FIN --> UC10
+APPR --> UC7
+
+' 建立用例间关系
+' include关系
+UC2 .> UC7 : <<include>>\n紧急出库必须经过审批
+UC6 .> UC2 : <<include>>\n合同录入支持紧急出库场景
+
+' extend关系
+UC3 .> UC8 : <<extend>>\n归还检测发现校准过期时触发
+UC1 .> UC2 : <<extend>>\n校准即将到期时触发紧急出库
+
+' 添加注解
+note right of UC1
+  合并自BR-EQP-001、BR-EQP-006、BR-EQP-007、BR-EQP-008
+  所有状态设备统一预警，包含梯次提醒机制
+end note
+
+note right of UC2
+  合并自BR-EQP-002、BR-ORD-003
+  支持即将到期设备有条件紧急出库
+  包含三方会签审批和72小时补校准报告要求
+end note
+
+note right of UC3
+  合并自BR-EQP-003、BR-EQP-005、BR-EQP-009、BR-EQP-010
+  使用统一检测清单，支持自动比对出厂参数
+  关键项强制100%双人复核
+end note
+
+note right of UC4
+  合并自BR-EQP-004、BR-EQP-011
+  使用标准化检测清单，支持抽检比例配置
+end note
+
+note right of UC5
+  合并自BR-EQP-009、BR-EQP-011
+  支持配置归还/出库检测清单及抽检比例
+end note
+
+note right of UC6
+  合并自BR-ORD-002、BR-ORD-005
+  合同录入时自动校验发票信息和资料完整性
+end note
+
+note right of UC7
+  来自BR-ORD-001
+  强制按库房主管→质控部门→科室主任顺序审批
+end note
+
+note right of UC8
+  来自BR-ORD-006
+  独立的设备状态异常处理流程
+  不复用紧急出库审批
+end note
+
+note right of UC9
+  来自BR-ORD-004
+  支持按开机次数、使用时长、使用量等计费方式
+end note
+
+note right of UC10
+  来自BR-FIN-001
+  按金额阈值差异化处理：
+  ≤5,000元自动处理
+  5,000-50,000元两级审批
+  >50,000元多级审批
+end note
+
+@enduml
+```
+@enduml

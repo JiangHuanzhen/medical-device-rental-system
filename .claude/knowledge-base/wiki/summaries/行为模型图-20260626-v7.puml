@@ -1,0 +1,337 @@
+@startuml
+|#LightBlue|招商业务员|
+start
+:发起紧急出库申请;
+note right: 选择校准过期设备
+:填写紧急出库单;
+note right: 包含客户信息、设备、紧急原因
+
+|#LightGreen|科室主任|
+:审核紧急需求的合理性;
+if (需求是否合理?) then (是)
+  :审批通过;
+else (否)
+  :驳回申请;
+  stop
+endif
+
+|#LightYellow|库房主管|
+:核实设备库存与状态;
+if (设备可用?) then (是)
+  :审批通过;
+else (否)
+  :驳回申请;
+  stop
+endif
+
+|#LightCoral|质控部门|
+:审核设备合规性;
+note right: 检查维保记录、校准状态
+if (设备状态合规?) then (是)
+  :审批通过;
+else (否)
+  :驳回申请;
+  stop
+endif
+
+|#LightBlue|招商业务员|
+:系统自动生成出库单;
+:系统开启24小时补交校准报告计时;
+fork
+  :设备出库;
+fork again
+  :系统锁定设备“维保责任”字段;
+  note right: 标记为“特殊出库状态”
+end fork
+
+:等待业务员补交报告;
+if (24小时内补交?) then (是)
+  :系统自动解除“特殊出库状态”;
+  :流程结束;
+else (否)
+  :触发升级督办;
+  :流程挂起，等待人工处理;
+endif
+
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|招商业务员|
+start
+:在系统中点击“开始检测”;
+note right: 触发“归还待验”流程
+
+|#LightYellow|库房人员|
+:接收检测任务;
+:使用归还检测清单进行物理检测;
+note right: 侧重外观、附件、基础功能
+:录入检测数据;
+
+|#LightCoral|系统|
+:自动比对检测数据与出厂基准值;
+if (偏差是否超过红线阈值?) then (是)
+  :强制阻止入库;
+  :生成异常设备报告;
+  :触发维修工单至运维;
+  stop
+else (否)
+  if (偏差是否在黄色警戒区?) then (是)
+    :提示并进入人工审核;
+    |#LightGreen|运维工程师|
+    :人工审核偏差;
+    if (允许带偏差入库?) then (是)
+      :备注原因，允许入库;
+    else (否)
+      :拒绝入库，触发维修流程;
+      stop
+    endif
+  else (否)
+    :偏差在正常范围内;
+  endif
+endif
+
+|#LightYellow|库房人员|
+:完成入库操作;
+:更新设备状态为“在库”;
+stop
+
+@enduml
+
+@startuml
+|#LightCoral|系统|
+start
+:每日凌晨扫描所有设备校准有效期;
+if (设备状态为“已出租”?) then (是)
+  if (设备已送达客户并验收?) then (是)
+    :纳入强制预警范围;
+  else (否)
+    :纳入非强制提醒范围;
+  endif
+else (否)
+  :纳入强制预警范围;
+endif
+
+if (设备在强制预警范围内?) then (是)
+  :检查设备到期时间;
+  if (到期时间 <= 7天?) then (是)
+    :发送单独提醒;
+  else (否)
+    if (到期时间 <= 15天?) then (是)
+      :发送单独提醒;
+    else (否)
+      if (到期时间 <= 30天?) then (是)
+        :发送单独提醒;
+      else (否)
+        :不触发提醒;
+      endif
+    endif
+  endif
+  if (今天是周一?) then (是)
+    :推送未来30天临期设备清单;
+  endif
+else (否)
+  :检查设备是否在“出库在途”或“待验收”状态;
+  if (是) then (是)
+    :在出库单上生成黄色标识提醒;
+    note right: 非强制性提醒
+  endif
+endif
+
+|#LightYellow|库房人员|
+:查看临期设备清单及提醒;
+:安排校准计划;
+stop
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+actor "科室主任" as DeptHead
+actor "库房主管" as StoreMgr
+actor "质控部门" as QC
+participant "Controller" as Ctrl
+participant "Service" as Svc
+participant "Repository" as Repo
+database "DB" as DB
+
+Sales -> Ctrl: 发起紧急出库申请(设备ID, 客户ID)
+Ctrl -> Svc: submitUrgentOutboundRequest(设备ID, 客户ID)
+Svc -> Repo: findDeviceById(设备ID)
+Repo -> DB: SELECT * FROM device WHERE id = ?
+DB --> Repo: deviceData
+Repo --> Svc: device
+Svc -> Repo: findCustomerById(客户ID)
+Repo -> DB: SELECT * FROM customer WHERE id = ?
+DB --> Repo: customerData
+Repo --> Svc: customer
+
+Svc -> Svc: validateRequest(device, customer)
+alt 设备状态异常
+  Svc --> Ctrl: return Error("设备不可用")
+  Ctrl --> Sales: 显示错误信息
+else 客户信息不完整
+  Svc --> Ctrl: return Error("客户信息不完整")
+  Ctrl --> Sales: 显示错误信息
+else 校验通过
+  Svc -> Repo: createUrgentOutboundOrder(device, customer)
+  Repo -> DB: INSERT INTO urgent_outbound_order ...
+  DB --> Repo: orderId
+  Repo --> Svc: orderId
+  Svc -> Repo: createApprovalTask(orderId, "科室主任")
+  Repo -> DB: INSERT INTO approval_task ...
+  DB --> Repo: taskId
+  Repo --> Svc: taskId
+  Svc --> Ctrl: return Success(orderId)
+  Ctrl --> Sales: 显示申请成功，等待审批
+end
+
+DeptHead -> Ctrl: 审批紧急出库(orderId, approve=true)
+Ctrl -> Svc: approveUrgentOutbound(orderId, "科室主任", true)
+Svc -> Repo: updateApprovalTask(orderId, "科室主任", true)
+Repo -> DB: UPDATE approval_task SET status='approved' WHERE ...
+DB --> Repo: success
+Svc -> Repo: createApprovalTask(orderId, "库房主管")
+Repo -> DB: INSERT INTO approval_task ...
+DB --> Repo: taskId
+Svc --> Ctrl: return Success
+Ctrl --> DeptHead: 审批成功，已流转至下一节点
+
+StoreMgr -> Ctrl: 审批紧急出库(orderId, approve=true)
+Ctrl -> Svc: approveUrgentOutbound(orderId, "库房主管", true)
+Svc -> Repo: updateApprovalTask(orderId, "库房主管", true)
+Repo -> DB: UPDATE approval_task SET status='approved' WHERE ...
+DB --> Repo: success
+Svc -> Repo: createApprovalTask(orderId, "质控部门")
+Repo -> DB: INSERT INTO approval_task ...
+DB --> Repo: taskId
+Svc --> Ctrl: return Success
+Ctrl --> StoreMgr: 审批成功，已流转至下一节点
+
+QC -> Ctrl: 审批紧急出库(orderId, approve=true)
+Ctrl -> Svc: approveUrgentOutbound(orderId, "质控部门", true)
+Svc -> Repo: updateApprovalTask(orderId, "质控部门", true)
+Repo -> DB: UPDATE approval_task SET status='approved' WHERE ...
+DB --> Repo: success
+Svc -> Repo: generateOutboundOrder(orderId)
+Repo -> DB: INSERT INTO outbound_order ...
+DB --> Repo: outboundOrderId
+Svc -> Repo: lockDeviceWarrantyField(deviceId)
+Repo -> DB: UPDATE device SET warranty_status='special_outbound' WHERE ...
+DB --> Repo: success
+Svc -> Repo: startReportTimer(orderId, 24h)
+Repo -> DB: INSERT INTO report_timer ...
+DB --> Repo: timerId
+Svc --> Ctrl: return Success(outboundOrderId)
+Ctrl --> QC: 审批完成，出库单已生成
+Ctrl --> Sales: 通知出库单已生成，请在24小时内补交报告
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+!define primary_key(x) <u>x</u>
+!define foreign_key(x) <i>x</i>
+
+table(Device) {
+  + primary_key(device_id): UUID
+  + device_name: VARCHAR
+  + serial_number: VARCHAR
+  + status: ENUM (in_stock, rented, outbound, maintenance, etc.)
+  + calibration_expiry_date: DATE
+  + factory_baseline_data: JSON
+  + warranty_status: VARCHAR
+}
+
+table(DeviceStatusLog) {
+  + primary_key(log_id): UUID
+  + foreign_key(device_id): UUID
+  + previous_status: ENUM
+  + new_status: ENUM
+  + change_timestamp: TIMESTAMP
+  + operator: VARCHAR
+}
+
+table(CalibrationAlert) {
+  + primary_key(alert_id): UUID
+  + foreign_key(device_id): UUID
+  + alert_type: ENUM (mandatory, non_mandatory)
+  + alert_trigger_time: TIMESTAMP
+  + alert_sent: BOOLEAN
+  + acknowledged_by: VARCHAR
+}
+
+table(OutboundOrder) {
+  + primary_key(order_id): UUID
+  + foreign_key(device_id): UUID
+  + foreign_key(customer_id): UUID
+  + order_type: ENUM (normal, urgent)
+  + order_status: ENUM (pending_approval, approved, shipped, etc.)
+  + created_at: TIMESTAMP
+  + urgent_report_deadline: TIMESTAMP
+}
+
+table(ApprovalTask) {
+  + primary_key(task_id): UUID
+  + foreign_key(order_id): UUID
+  + approver_role: VARCHAR
+  + approval_status: ENUM (pending, approved, rejected)
+  + approval_comment: TEXT
+  + approved_at: TIMESTAMP
+}
+
+table(ReturnInspection) {
+  + primary_key(inspection_id): UUID
+  + foreign_key(order_id): UUID
+  + foreign_key(device_id): UUID
+  + inspector: VARCHAR
+  + inspection_type: ENUM (return, pre_outbound)
+  + inspection_data: JSON
+  + deviation_percentage: DECIMAL
+  + inspection_result: ENUM (pass, conditional_pass, fail)
+  + created_at: TIMESTAMP
+}
+
+table(Customer) {
+  + primary_key(customer_id): UUID
+  + customer_name: VARCHAR
+  + tax_id: VARCHAR
+  + invoice_info: JSON
+  + contact_person: VARCHAR
+}
+
+table(RentalContract) {
+  + primary_key(contract_id): UUID
+  + foreign_key(customer_id): UUID
+  + foreign_key(device_id): UUID
+  + billing_unit: ENUM (month, quarter, year, per_use, etc.)
+  + billing_rule: JSON
+  + contract_status: ENUM (active, expired, terminated)
+  + start_date: DATE
+  + end_date: DATE
+}
+
+table(MaintenanceWorkOrder) {
+  + primary_key(work_order_id): UUID
+  + foreign_key(device_id): UUID
+  + work_order_type: ENUM (repair, calibration)
+  + work_order_status: ENUM (open, in_progress, completed)
+  + created_at: TIMESTAMP
+  + assigned_to: VARCHAR
+}
+
+Device ||--o{ DeviceStatusLog : "has"
+Device ||--o{ CalibrationAlert : "triggers"
+Device ||--o{ OutboundOrder : "involved in"
+Device ||--o{ ReturnInspection : "inspected in"
+Device ||--o{ RentalContract : "leased under"
+Device ||--o{ MaintenanceWorkOrder : "requires"
+
+OutboundOrder ||--o{ ApprovalTask : "requires"
+OutboundOrder ||--o{ ReturnInspection : "triggers"
+
+Customer ||--o{ OutboundOrder : "places"
+Customer ||--o{ RentalContract : "signs"
+
+@enduml

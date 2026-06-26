@@ -1,0 +1,53 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+actor "招商业务员" as Sales
+actor "库房人员" as Warehouse
+actor "运维工程师" as Ops
+actor "财务人员" as Finance
+actor "系统" as System
+
+rectangle "设备管理" {
+  usecase "UC1: 管理设备状态" as UC1
+  usecase "UC2: 执行设备归还检测" as UC2
+  usecase "UC3: 执行设备出库检测" as UC3
+  usecase "UC4: 管理校准预警" as UC4
+  usecase "UC5: 处理校准过期设备" as UC5
+  usecase "UC6: 查看校准预警通知" as UC6
+  usecase "UC7: 管理检测清单模板" as UC7
+  usecase "UC8: 查看设备校准状态" as UC8
+  usecase "UC9: 发起紧急出库审批" as UC9
+}
+
+Sales --> UC1
+Sales --> UC2
+Sales --> UC3
+Warehouse --> UC2
+Warehouse --> UC4
+Warehouse --> UC6
+Ops --> UC1
+Ops --> UC4
+Ops --> UC5
+Ops --> UC7
+Ops --> UC8
+Finance --> UC8
+Finance --> UC9
+
+UC2 .> UC7 : <<include>>
+UC3 .> UC7 : <<include>>
+UC2 .> UC8 : <<include>>
+UC3 .> UC8 : <<include>>
+UC5 .> UC9 : <<extend>>
+UC4 .> UC6 : <<extend>>
+
+note right of UC2 : 合并BR-EQP-002,004,005,009,011,016,019\n包含初检和复核两个环节
+note right of UC4 : 合并BR-EQP-001,003,006,008,012,014,017,021\n包含分级预警和提醒策略
+note right of UC5 : 合并BR-EQP-003,010\n包含7天禁止出库和3天锁库
+note right of UC9 : 扩展自UC5，仅在紧急医疗场景触发
+note right of UC7 : 合并BR-EQP-011,016,018,019\n统一管理检测清单模板
+note right of UC1 : 合并BR-EQP-001,008,015\n管理设备全生命周期状态
+@enduml
+```
+@enduml

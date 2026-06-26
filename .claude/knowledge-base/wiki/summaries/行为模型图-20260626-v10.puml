@@ -1,0 +1,348 @@
+@startuml
+|#LightBlue|系统|
+start
+:检测到设备校准有效期;
+:计算距离到期日天数;
+fork
+  :生成预警通知;
+fork again
+  :更新设备状态;
+end fork
+
+|#LightYellow|业务员|
+if (距离到期日 <= 7天?) then ([是])
+  :尝试发起出库申请;
+  |#LightBlue|系统|
+  if (距离到期日 <= 3天?) then ([是])
+    :**强制锁库**，拒绝出库;
+    |#LightYellow|业务员|
+    :收到“设备已锁库”通知;
+    :评估是否发起紧急出库申请;
+    if (发起紧急出库申请?) then ([是])
+      :填写紧急出库申请单;
+      |#LightBlue|系统|
+      :启动四级审批流程;
+      :通知**科室主任**审批;
+      |#LightPink|科室主任|
+      :审批紧急需求;
+      if (审批通过?) then ([是])
+        |#LightBlue|系统|
+        :通知**库房主管**审批;
+        |#LightGreen|库房主管|
+        :核实库存可用性;
+        if (库存可用?) then ([是])
+          |#LightBlue|系统|
+          :通知**质控部门**审批;
+          |#LightCoral|质控部门|
+          :确认设备安全合规;
+          if (合规?) then ([是])
+            |#LightBlue|系统|
+            :通知**财务**审批;
+            |#LightYellow|财务|
+            :确认押金/费用;
+            if (财务确认?) then ([是])
+              |#LightBlue|系统|
+              :生成紧急出库单;
+              :开启24小时补交报告计时;
+              :设备标记为“待补校准”;
+              stop
+            else ([否])
+              :拒绝出库;
+              stop
+            endif
+          else ([否])
+            :拒绝出库;
+            stop
+          endif
+        else ([否])
+          :拒绝出库;
+          stop
+        endif
+      else ([否])
+        :拒绝出库;
+        stop
+      endif
+    else ([否])
+      stop
+    endif
+  else ([否])
+    :**禁止出库**，允许发起校准或更换;
+    |#LightYellow|业务员|
+    :协调客户更换设备或安排校准;
+    stop
+  endif
+else ([否])
+  :正常出库流程;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightYellow|业务员|
+start
+:使用**标准检测清单**进行初检;
+:录入初检结果;
+|#LightBlue|系统|
+:保存初检记录;
+:通知**库房人员**进行复核;
+
+|#LightGreen|库房人员|
+:使用**同一标准清单**进行复核;
+:录入复核检测数据;
+|#LightBlue|系统|
+:调取该设备**出厂基准参数**;
+:自动比对复核数据与出厂参数;
+if (偏差超出预设阈值?) then ([是])
+  :弹出警告，阻断“完成收回”;
+  :强制将设备状态转为“待维修”或“待校准”;
+  :生成待办事项，推送至财务与运营;
+  |#LightYellow|财务/运营负责人|
+  if (特殊审批通过?) then ([是])
+    |#LightBlue|系统|
+    :记录审计痕迹;
+    :允许强制完成收回;
+    :设备状态更新为“在库”;
+    stop
+  else ([否])
+    |#LightBlue|系统|
+    :触发维修/校准流程;
+    if (偏差类型为“维修”?) then ([是])
+      :生成“维修记录+配件更换”工单;
+      :更新维修知识库;
+      stop
+    else ([否])
+      :生成“校准”工单;
+      stop
+    endif
+  endif
+else ([否])
+  :设备状态更新为“在库”;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|系统|
+start
+:定时任务启动;
+:遍历所有状态的设备;
+while (还有未检查的设备?) is (是)
+  :获取设备当前状态;
+  if (状态为“在库”?) then ([是])
+    :检查校准有效期;
+    if (距离到期日 <= 7天?) then ([是])
+      :标记为“即将到期”;
+      :生成预警通知给库房;
+    endif
+  elseif (状态为“出租中”?) then ([是])
+    :检查校准有效期;
+    if (距离到期日 <= 7天?) then ([是])
+      :生成预警通知给业务员;
+    endif
+  elseif (状态为“出库在途”?) then ([是])
+    :检查校准有效期;
+    if (距离到期日 <= 7天?) then ([是])
+      :生成预警通知给业务员;
+    endif
+  elseif (状态为“待验收”?) then ([是])
+    :检查校准有效期;
+    if (距离到期日 <= 7天?) then ([是])
+      :生成预警通知给业务员和客户;
+    endif
+  elseif (状态为“待维修”?) then ([是])
+    :检查维修工单进度;
+    if (超时未处理?) then ([是])
+      :生成升级督办通知;
+    endif
+  elseif (状态为“待校准”?) then ([是])
+    :检查校准工单进度;
+    if (超时未处理?) then ([是])
+      :生成升级督办通知;
+    endif
+  endif
+  :移动到下一个设备;
+endwhile ([否])
+stop
+
+@enduml
+
+@startuml
+actor "业务员" as Sales
+actor "库房人员" as Warehouse
+participant "Controller" as Ctrl
+participant "Service" as Svc
+participant "Repository" as Repo
+database "数据库" as DB
+
+Sales -> Ctrl: 提交初检结果
+Ctrl -> Svc: saveInitialCheck(deviceId, checkData)
+Svc -> Repo: saveCheckRecord(deviceId, checkData, type="initial")
+Repo -> DB: INSERT check_record
+DB --> Repo: success
+Repo --> Svc: recordId
+Svc --> Ctrl: initialCheckSaved(recordId)
+Ctrl --> Sales: 初检成功，等待复核
+
+Warehouse -> Ctrl: 提交复核结果
+Ctrl -> Svc: submitFinalCheck(deviceId, finalCheckData)
+Svc -> Repo: getDeviceBaseline(deviceId)
+Repo -> DB: SELECT baseline_params
+DB --> Repo: baselineData
+Svc -> Svc: compareData(finalCheckData, baselineData)
+
+alt [偏差超出阈值]
+    Svc -> Repo: blockReturnProcess(deviceId)
+    Repo -> DB: UPDATE device_status SET status='待维修'
+    DB --> Repo: success
+    Svc -> Repo: createWorkOrder(deviceId, type='repair')
+    Repo -> DB: INSERT work_order
+    DB --> Repo: success
+    Svc -> Repo: notifyFinanceAndOps(deviceId, deviationDetails)
+    Repo --> Svc: notificationSent
+    Svc --> Ctrl: returnBlocked(workOrderId)
+    Ctrl --> Warehouse: 警告：设备异常，已阻断收回，生成维修工单
+else [偏差在阈值内]
+    Svc -> Repo: completeReturnProcess(deviceId)
+    Repo -> DB: UPDATE device_status SET status='在库'
+    DB --> Repo: success
+    Svc --> Ctrl: returnCompleted()
+    Ctrl --> Warehouse: 设备收回成功，状态更新为“在库”
+end
+
+opt [特殊审批]
+    actor "财务/运营负责人" as Manager
+    Manager -> Ctrl: 审批强制通过
+    Ctrl -> Svc: forceCompleteReturn(deviceId, reason)
+    Svc -> Repo: logAuditTrail(deviceId, reason)
+    Repo -> DB: INSERT audit_log
+    DB --> Repo: success
+    Svc -> Repo: updateDeviceStatus(deviceId, '在库')
+    Repo -> DB: UPDATE device_status
+    DB --> Repo: success
+    Svc --> Ctrl: forceReturnCompleted()
+    Ctrl --> Manager: 强制收回完成，已记录审计日志
+end
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID (PK)
+  --
+  设备编号
+  设备名称
+  型号
+  出厂参数ID (FK)
+  当前状态: 在库/出租/在途/待验收/待维修/待校准/报废
+  校准有效期
+  创建时间
+}
+
+table(出厂参数) {
+  + 出厂参数ID (PK)
+  --
+  传感器灵敏度基准值
+  电池容量基准值
+  其他基准参数
+}
+
+table(检测清单模板) {
+  + 模板ID (PK)
+  --
+  模板名称
+  版本号
+  创建时间
+}
+
+table(检测项) {
+  + 检测项ID (PK)
+  --
+  模板ID (FK)
+  项目名称
+  数据类型
+  单位
+  阈值上限
+  阈值下限
+}
+
+table(检测记录) {
+  + 检测记录ID (PK)
+  --
+  设备ID (FK)
+  检测类型: 出库/归还
+  检测人ID (FK)
+  检测时间
+  检测结果: 正常/异常
+  复核人ID (FK)
+  复核时间
+  复核结果: 正常/异常
+}
+
+table(检测数据) {
+  + 检测数据ID (PK)
+  --
+  检测记录ID (FK)
+  检测项ID (FK)
+  检测值
+  是否异常
+}
+
+table(审批流程) {
+  + 审批流程ID (PK)
+  --
+  流程类型: 紧急出库/特殊收回
+  发起人ID (FK)
+  当前节点
+  状态: 进行中/已完成/已拒绝
+  创建时间
+}
+
+table(审批节点) {
+  + 审批节点ID (PK)
+  --
+  审批流程ID (FK)
+  审批人角色: 科室主任/库房主管/质控/财务
+  审批顺序
+  审批人ID (FK)
+  审批意见
+  审批时间
+  状态: 待审批/已通过/已拒绝
+}
+
+table(工单) {
+  + 工单ID (PK)
+  --
+  设备ID (FK)
+  工单类型: 维修/校准
+  状态: 待处理/处理中/已完成
+  创建时间
+  处理人ID (FK)
+  处理结果
+}
+
+table(用户) {
+  + 用户ID (PK)
+  --
+  用户名
+  角色: 业务员/库房人员/运维工程师/财务/科室主任/质控
+}
+
+设备 }o--|| 出厂参数 : 拥有
+设备 ||--o{ 检测记录 : 产生
+设备 ||--o{ 工单 : 触发
+设备 ||--o{ 审批流程 : 关联
+
+检测清单模板 ||--o{ 检测项 : 包含
+检测记录 ||--o{ 检测数据 : 包含
+检测数据 }o--|| 检测项 : 对应
+
+审批流程 ||--o{ 审批节点 : 包含
+用户 ||--o{ 审批节点 : 审批
+用户 ||--o{ 检测记录 : 执行
+用户 ||--o{ 工单 : 处理
+
+@enduml

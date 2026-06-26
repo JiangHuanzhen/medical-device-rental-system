@@ -1,0 +1,62 @@
+---
+title: UML用例图-BL-20260626-02
+tags: [UML 基线]
+aliases: ["用例图-BL-20260626-02"]
+---
+
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+actor "招商业务员" as Sales
+actor "运维工程师" as Ops
+actor "库房人员" as WH
+actor "财务人员" as Fin
+actor "审批链" as Approver
+
+rectangle "设备管理" {
+  usecase "UC1: 监控设备校准有效期" as UC1
+  usecase "UC2: 执行设备出库管控" as UC2
+  usecase "UC3: 发起紧急出库审批" as UC3
+  usecase "UC4: 执行设备归还检测" as UC4
+  usecase "UC5: 录入初检结果" as UC5
+  usecase "UC6: 执行全面复核" as UC6
+  usecase "UC7: 处理检测偏差" as UC7
+  usecase "UC8: 创建维修工单" as UC8
+  usecase "UC9: 查看财务影响分析" as UC9
+}
+
+note right of UC1 : 合并BR-EQP-001/005\n覆盖库房内和已出租设备
+note right of UC2 : 合并BR-EQP-002/003\n7天禁止出库+3天锁库
+note right of UC3 : 基于BR-EQP-003\n三级审批流程
+note right of UC4 : 合并BR-EQP-004/006/007/008/009/015/016\n统一归还检测入口
+note right of UC7 : 合并BR-EQP-006/007/009/015/016\n分级预警+强制入库/创建工单
+note right of UC8 : 基于BR-EQP-008\n自动创建P1级工单
+
+Sales --> UC1
+Sales --> UC2
+Sales --> UC3
+Ops --> UC4
+Ops --> UC5
+WH --> UC6
+Ops --> UC7
+Ops --> UC8
+Fin --> UC9
+
+UC2 .> UC1 : <<include>>
+UC4 .> UC5 : <<include>>
+UC4 .> UC6 : <<include>>
+UC7 .> UC8 : <<extend>>
+UC3 .> UC2 : <<extend>>
+UC9 .> UC7 : <<extend>>
+
+note on link #FFAAAA: 出库管控依赖校准监控
+note on link #FFAAAA: 归还检测包含初检和复核
+note on link #FFAAAA: 偏差过大时触发维修工单
+note on link #FFAAAA: 锁库后可发起紧急审批
+note on link #FFAAAA: 财务查看偏差处理影响
+
+@enduml
+```
+@enduml

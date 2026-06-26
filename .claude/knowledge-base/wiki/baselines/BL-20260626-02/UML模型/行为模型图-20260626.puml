@@ -1,0 +1,303 @@
+---
+title: UML行为模型-BL-20260626-02
+tags: [UML 基线]
+---
+
+@startuml
+|#LightBlue|业务员|
+start
+:进行设备归还初检;
+:录入所有必填检测结果;
+note right: 使用与出库一致的检测模板 (BR-EQP-012)
+
+|#LightGreen|系统|
+:自动比对出厂基准数据;
+:计算各项偏差值;
+
+|#LightYellow|系统|
+fork
+  :记录初检数据;
+fork again
+  :触发后续流程;
+end fork
+
+|#LightYellow|系统|
+if (是否存在任何偏差?) then (是)
+  :生成偏差报告;
+  if (最大偏差是否超过干预阈值?) then (是)
+    :锁定设备状态为 "待维修-锁定";
+    :终结当前检测流程;
+    :自动创建 P1 级维修工单;
+    note right: 流程终结并触发新工单 (BR-EQP-008)
+  else (否)
+    if (最大偏差是否超过预警阈值?) then (是)
+      :弹出强警告弹窗;
+      note right: 提供两个选项 (BR-EQP-009, BR-EQP-015)
+      if (用户选择 "强制入库"?) then (是)
+        :强制要求填写异常原因;
+        :设备状态标记为 "观察中";
+        :生成观察记录;
+        note right: 允许入库并生成观察记录 (BR-EQP-006, BR-EQP-016)
+      else (否)
+        :自动创建维修工单;
+        :设备状态标记为 "待维修";
+      endif
+    else (否)
+      :设备状态标记为 "正常";
+    endif
+  endif
+else (否)
+  :设备状态标记为 "正常";
+endif
+
+|#LightBlue|库房人员|
+:对所有检测项进行全面复核;
+note right: 必须等业务员初检完成后 (BR-EQP-011)
+note right: 复核所有项，非仅可疑项 (BR-EQP-010, BR-EQP-013, BR-EQP-014)
+
+|#LightYellow|系统|
+if (复核结果与初检结果一致?) then (是)
+  :完成入库流程;
+else (否)
+  :标记为 "复核异常";
+  :触发人工处理流程;
+endif
+
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|系统|
+start
+:每日扫描所有设备校准有效期;
+note right: 覆盖库房内和已出租设备 (BR-EQP-001)
+
+|#LightYellow|系统|
+if (设备是否已出租?) then (是)
+  if (设备是否已送达并验收?) then (是)
+    :责任归属转移至客户现场维保计划;
+    note right: 明确“已出租”状态定义 (BR-EQP-005)
+  else (否)
+    :责任归属仍在我方;
+  endif
+else (否)
+  :责任归属仍在我方;
+endif
+
+|#LightYellow|系统|
+if (距离校准到期日 <= 3天?) then (是)
+  :强制锁库;
+  note right: 到期前3天锁库 (BR-EQP-002)
+  :发送紧急预警通知;
+else (否)
+  if (距离校准到期日 <= 7天?) then (是)
+    :禁止出库;
+    note right: 到期前7天禁止出库 (BR-EQP-002)
+    :发送预警通知;
+  else (否)
+    :发送常规提醒;
+  endif
+endif
+
+|#LightBlue|招商业务员|
+if (设备已被锁库，但有紧急需求?) then (是)
+  :发起紧急特批申请;
+  note right: 仅限合同允许的客户 (BR-EQP-003)
+
+|#LightGreen|审批系统|
+:区域经理审批;
+if (审批通过?) then (是)
+  :质量合规负责人审批;
+  if (审批通过?) then (是)
+    :招商业务总监审批;
+    if (审批通过?) then (是)
+      :允许紧急出库;
+      :粘贴 "紧急临期" 标签;
+      :承诺7天内校准/更换;
+      :全程记录留痕;
+      note right: 三级审批 + 事后追踪 (BR-EQP-003)
+    else (否)
+      :拒绝出库;
+    endif
+  else (否)
+    :拒绝出库;
+  endif
+else (否)
+  :拒绝出库;
+endif
+else (否)
+  :正常流程;
+endif
+
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|业务员|
+start
+:选择要出库的设备;
+:发起出库申请;
+
+|#LightYellow|系统|
+:检查设备校准有效期;
+
+if (距离校准到期日 <= 3天?) then (是)
+  :拒绝出库申请;
+  :提示 "设备已锁库，无法出库";
+  stop
+else (否)
+  if (距离校准到期日 <= 7天?) then (是)
+    :弹出强警告 "设备即将到期，禁止出库";
+    :拒绝出库申请;
+    stop
+  else (否)
+    :允许出库;
+  endif
+endif
+
+|#LightBlue|业务员|
+:进行出库检测;
+:录入检测结果;
+
+|#LightYellow|系统|
+:比对出库检测数据与基准数据;
+if (检测数据异常?) then (是)
+  :标记设备状态为 "待维修";
+  :阻止出库流程;
+  stop
+else (否)
+  :更新设备状态为 "出库在途";
+endif
+
+|#LightBlue|物流人员|
+:配送设备至客户现场;
+
+|#LightGreen|客户|
+:验收设备并签字;
+
+|#LightYellow|系统|
+:更新设备状态为 "已出租";
+note right: 明确“已出租”状态定义 (BR-EQP-005)
+:启动客户现场维保计划;
+:校准预警责任转移;
+
+stop
+
+@enduml
+
+@startuml
+actor 业务员 as Actor
+participant "归还检测Controller" as Controller
+participant "归还检测Service" as Service
+participant "设备Repository" as DeviceRepo
+participant "检测记录Repository" as RecordRepo
+participant "维修工单Repository" as RepairRepo
+
+Actor -> Controller: 提交归还检测数据
+Controller -> Service: processReturnCheck(deviceId, checkData)
+Service -> DeviceRepo: findById(deviceId)
+DeviceRepo --> Service: device
+Service -> Service: compareWithBaseline(checkData, device.baseline)
+alt 无偏差
+  Service -> RecordRepo: save(record, status="NORMAL")
+  RecordRepo --> Service: record
+  Service --> Controller: returnResult("正常入库")
+  Controller --> Actor: 显示 "入库成功"
+else 偏差在预警阈值内
+  Service -> RecordRepo: save(record, status="NORMAL")
+  RecordRepo --> Service: record
+  Service --> Controller: returnResult("正常入库")
+  Controller --> Actor: 显示 "入库成功"
+else 偏差在预警与干预阈值之间
+  Service --> Controller: returnWarning("偏差预警", options=["强制入库", "创建维修工单"])
+  Controller --> Actor: 显示预警弹窗
+  Actor -> Controller: 选择 "强制入库"
+  Controller -> Service: forceCheckIn(deviceId, reason)
+  Service -> DeviceRepo: updateStatus(deviceId, "OBSERVING")
+  Service -> RecordRepo: save(record, status="OBSERVING", reason)
+  Service -> Service: createObservationRecord(deviceId, reason)
+  Service --> Controller: returnResult("强制入库成功")
+  Controller --> Actor: 显示 "强制入库成功"
+else 偏差超过干预阈值
+  Service -> DeviceRepo: updateStatus(deviceId, "PENDING_REPAIR_LOCKED")
+  Service -> RecordRepo: save(record, status="FAILED_TERMINATED")
+  Service -> RepairRepo: createRepairOrder(deviceId, priority="P1")
+  RepairRepo --> Service: repairOrder
+  Service --> Controller: returnResult("检测不通过，已创建维修工单")
+  Controller --> Actor: 显示 "检测不通过，已创建P1级维修工单"
+end
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  +设备ID: UUID (PK)
+  -出厂基准数据: JSON
+  -当前状态: ENUM
+  -校准有效期: Date
+  -是否允许紧急出库: Boolean
+}
+
+table(设备状态变更记录) {
+  +记录ID: UUID (PK)
+  -设备ID: UUID (FK)
+  -变更前状态: ENUM
+  -变更后状态: ENUM
+  -变更时间: DateTime
+  -操作人: String
+  -备注: String
+}
+
+table(检测记录) {
+  +记录ID: UUID (PK)
+  -设备ID: UUID (FK)
+  -检测类型: ENUM (出库/归还)
+  -检测结果: JSON
+  -检测人: String
+  -检测时间: DateTime
+  -状态: ENUM (正常/观察中/待维修/已终结)
+}
+
+table(维修工单) {
+  +工单ID: UUID (PK)
+  -设备ID: UUID (FK)
+  -工单类型: ENUM
+  -优先级: ENUM
+  -创建时间: DateTime
+  -状态: ENUM
+  -处理人: String
+}
+
+table(观察记录) {
+  +记录ID: UUID (PK)
+  -设备ID: UUID (FK)
+  -偏差描述: String
+  -观察周期: Interval
+  -责任工程师: String
+  -到期时间: DateTime
+  -状态: ENUM (进行中/已完成)
+}
+
+table(紧急特批申请) {
+  +申请ID: UUID (PK)
+  -设备ID: UUID (FK)
+  -合同ID: UUID (FK)
+  -申请原因: String
+  -审批状态: ENUM
+  -审批链: JSON
+  -特批标签: String
+  -承诺完成时间: Date
+}
+
+设备 ||--o{ 设备状态变更记录 : 有
+设备 ||--o{ 检测记录 : 经历
+设备 ||--o{ 维修工单 : 关联
+设备 ||--o{ 观察记录 : 关联
+设备 ||--o{ 紧急特批申请 : 发起
+
+
+@enduml

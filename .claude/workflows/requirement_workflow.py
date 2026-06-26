@@ -695,15 +695,16 @@ def _a1_agent(stakeholder: str, state: RequirementState) -> dict:
             fire_progress(f"[{stakeholder}] ⤴ Q: {q[:60]}...")
             fire_dialog(stakeholder, q, answer)
         fire_progress(f"[{stakeholder}] [OK] 补充追问完成")
-        # 回退补充的对话也要保存到 raw/notes（新文件，不覆盖首次记录）
+        # 回退补充对话保存为独立新文件，文件名含轮次标识
         if new_dialog != existing:
             ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
             ts = datetime.now().strftime("%H%M")
-            lines = [f"# {stakeholder} — 回退补充需求获取记录\n", f"日期：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"]
+            iter_cnt = state.get("iteration_count", 1)
+            lines = [f"# {stakeholder} — 需求获取记录（第{iter_cnt}轮回退补充）\n", f"日期：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"]
             for i, item in enumerate(new_dialog[len(existing):], 1):
                 lines.append(f"## 补充第{i}问\n**问：** {item['q']}\n\n**答：** {item['a']}\n")
-            content = kb_frontmatter(f"{stakeholder}补充记录", ["涉众对话", stakeholder, "回退"], [f"{stakeholder}补充"]) + "\n".join(lines)
-            save_to_kb("raw_notes", f"{stakeholder}-{ds}-{ts}-补充需求记录.md", content)
+            content = kb_frontmatter(f"{stakeholder}需求记录-R{iter_cnt}", ["涉众对话", stakeholder, f"第{iter_cnt}轮"], [f"{stakeholder}"]) + "\n".join(lines)
+            save_to_kb("raw_notes", f"{stakeholder}-{ds}-{ts}-需求记录.md", content)
         return {field: new_dialog}
 
     print(f"  [{stakeholder}] 无需补充追问")

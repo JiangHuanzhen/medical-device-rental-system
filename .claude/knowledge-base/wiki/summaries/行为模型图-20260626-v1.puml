@@ -1,356 +1,314 @@
 @startuml
-|库房人员|
+|#LightBlue|库房人员|
 start
-:扫描设备条码，发起出库;
-
-|系统|
-:查询设备证书信息;
-:判断证书有效期状态;
-
-if (证书状态?) then ( [已过期] )
-  :显示“证书过期，出库被阻止”;
-  |库房人员|
-  :评估是否发起紧急出库;
-  if (是否发起特批?) then ( [是] )
-    :填写《设备状态异常出库声明》;
-    |系统|
-    :发起特批申请至总监;
-  else ( [否] )
-    |库房人员|
-    :结束出库流程;
-    stop
+:扫描设备条码，发起出库申请;
+|#LightGreen|系统|
+:校验设备校准状态;
+if (设备校准状态是否过期?) then (是)
+  |#LightBlue|库房人员|
+  :系统提示“校准过期，无法出库”;
+  :判断是否为紧急临床需求?;
+  if (是否为紧急临床需求?) then (是)
+    :发起“紧急出库审批”流程;
+  else (否)
+    stop (出库流程终止)
   endif
-elseif ( [有效期<7天] ) then
-  |系统|
-  :弹出红色预警“证书剩余不足7天”;
-  :要求库房人员二次确认;
-  |库房人员|
-  :确认并签署承诺书;
-elseif ( [有效期<30天] ) then
-  |系统|
-  :弹出黄色预警“设备即将到期”;
-  :标记设备为“预到期”;
-else ( [有效期>30天] )
-  :证书状态正常;
+else (否)
+  |#LightGreen|系统|
+  :允许出库，更新库存;
+  stop (正常出库完成)
 endif
 
-|系统|
-:生成《设备出库状态确认单》;
-:强制要求拍摄设备高清照片/视频;
-|库房人员|
-:上传影像资料;
-|客户方|
-:在确认单上电子签名;
-|系统|
-:锁定租赁前设备状态;
-:生成有效租赁单;
-:更新设备状态为“已出库”;
-stop
+|#LightBlue|库房人员|
+:填写紧急出库申请单（含设备信息、紧急原因、承诺补交报告时间）;
+|#LightGreen|系统|
+:根据设备价值自动确定审批层级;
+if (设备价值 > 100,000元?) then (是)
+  :触发四级审批流程;
+else (否)
+  :触发三级审批流程;
+endif
+
+|#LightYellow|业务对接人|
+:第一签：审核业务必要性;
+if (业务必要性审核通过?) then (是)
+else (否)
+  stop (审批驳回)
+endif
+
+|#LightCyan|技术/维修负责人|
+:第二签：评估技术风险;
+if (技术风险评估通过?) then (是)
+else (否)
+  stop (审批驳回)
+endif
+
+|#LightPink|财务负责人|
+:第三签：审核财务影响与押金;
+if (财务审核通过?) then (是)
+else (否)
+  stop (审批驳回)
+endif
+
+|#LightBlue|库房主管|
+:第四签：确认最终放行;
+if (库房主管确认放行?) then (是)
+  |#LightGreen|系统|
+  :生成“紧急放行”标识;
+  :记录审批日志;
+  :更新设备状态为“已出库-紧急放行”;
+  :启动24小时补交报告倒计时;
+  stop (紧急出库完成)
+else (否)
+  stop (审批驳回)
+endif
 
 @enduml
 
 @startuml
-|库房人员|
+|#LightBlue|库房人员|
 start
-:扫描归还设备及附件条码;
-
-|系统|
-:自动比对出库附件清单与归还附件;
-
-if (附件是否完整?) then ( [缺失] )
-  :生成“缺失记录”;
-  :弹窗警示，要求现场确认;
-  |库房人员|
-  :确认缺失项;
-else ( [完整] )
-  :附件检查通过;
-endif
-
-|运维工程师|
-:执行《归还检查维修记录》;
-:记录功能测试、外观检查等结果;
-
-|系统|
-:根据检测结果自动判定;
-
-if (设备主体健康状况?) then ( [有故障/损坏] )
-  :标记状态为“已归还-需维修”;
-  if (附件是否缺失?) then ( [是] )
-    :附带“附件缺失”标签;
-    :关联维修工单;
-  endif
-  :进入维修流程;
-  stop
-else ( [硬件完好] )
-  :标记状态为“已归还-待入库”;
-  if (附件是否缺失?) then ( [是] )
-    :附带“附件缺失”标签;
-    :设置“待补件”子标记;
-  endif
-  |库房人员|
-  :执行入库操作;
+:接收新到设备;
+:扫描设备标签，获取实物信息;
+|#LightGreen|系统|
+:调取对应采购订单信息;
+:比对实物信息与采购订单信息;
+if (品牌型号、出厂编号、注册证号是否一致?) then (是)
+  |#LightBlue|库房人员|
+  :执行入库检测（使用标准化清单）;
+  |#LightGreen|系统|
+  :记录检测结果;
   :更新设备状态为“在库”;
-  stop
+  :更新库位信息;
+  stop (入库完成)
+else (否)
+  |#LightGreen|系统|
+  :自动生成“信息异常”标记;
+  :暂停入库操作;
+  :同时推送通知给采购和质检部门;
+  |#LightYellow|采购部门|
+  :接收异常通知;
+  :与供应商核实信息;
+  |#LightCyan|质检部门|
+  :接收异常通知;
+  :对设备进行实物复核;
+  fork
+    |#LightYellow|采购部门|
+    :更新采购订单信息或退货;
+  fork again
+    |#LightCyan|质检部门|
+    :出具复核报告;
+  end fork
+  |#LightGreen|系统|
+  :汇总采购和质检的处理结果;
+  if (问题是否已解决?) then (是)
+    |#LightBlue|库房人员|
+    :继续执行入库流程;
+    stop (入库完成)
+  else (否)
+    stop (设备退回供应商)
+  endif
 endif
 
 @enduml
 
 @startuml
-|招商业务员|
+|#LightBlue|库房人员|
 start
-:收到客户变更请求;
+:接收归还设备;
+:扫描设备条码;
+|#LightGreen|系统|
+:调取设备出库前检测记录;
+:加载标准化归还检测清单;
+|#LightBlue|库房人员|
+:执行常规项检测;
+|#LightGreen|系统|
+:记录常规项检测结果;
+:识别检测项中的“关键项”（如电气安全）;
+if (是否存在关键项?) then (是)
+  |#LightBlue|库房人员|
+  :发起关键项双人复核请求;
+  |#LightCyan|运维工程师|
+  :执行关键项复核;
+  |#LightGreen|系统|
+  :记录复核结果;
+  if (关键项复核是否通过?) then (是)
+  else (否)
+    :标记设备为“待维修”;
+    :自动创建维修工单;
+    stop (设备进入维修流程)
+  endif
+else (否)
+endif
 
-if (变更类型?) then ( [合同核心条款变更] )
-  |系统|
-  :检查24小时内变更次数;
-  if (变更次数 < 限制?) then ( [是] )
-    :允许发起变更单;
-  else ( [否] )
-    :强制要求填写变更原因;
-    :发起上级审批流程;
-    if (审批通过?) then ( [是] )
-      :允许发起变更单;
-    else ( [否] )
-      :变更请求被驳回;
-      stop
-    endif
-  endif
-  |招商业务员|
-  :在合同中发起“变更单”;
-  |系统|
-  :联动更新租金、维保等字段;
-  :记录变更日志;
-  stop
-else ( [紧急出库请求] )
-  |系统|
-  :判断紧急需求真伪;
-  if ( [时间敏感且历史行为正常?] ) then ( [是] )
-    :标记为“真实紧急”;
-  else ( [否] )
-    :标记为“疑似非紧急”;
-    :触发人工审核;
-    if (人工审核通过?) then ( [是] )
-      :确认为紧急;
-    else ( [否] )
-      :驳回请求，要求走标准流程;
-      stop
-    endif
-  endif
-  |招商业务员|
-  :手动发起“紧急出库预约”;
-  |系统|
-  :在合同上标记“客户需求调整中”;
-  :通知物流团队;
-  :保留变更记录;
-  stop
+|#LightGreen|系统|
+:汇总所有检测结果;
+if (所有检测项是否通过?) then (是)
+  :更新设备状态为“在库-已检测”;
+  :更新库位信息;
+  stop (归还入库完成)
+else (否)
+  :标记设备为“待维修”;
+  :自动创建维修工单;
+  stop (设备进入维修流程)
 endif
 
 @enduml
 
 @startuml
-actor "库房人员" as Operator
+actor "库房人员" as WH
 participant "出库控制器" as Controller
-participant "设备服务" as Service
-participant "证书仓储" as CertRepo
-participant "设备仓储" as EquipRepo
+participant "设备服务" as DeviceService
 participant "审批服务" as ApprovalService
+participant "设备仓储" as DeviceRepo
+participant "审批仓储" as ApprovalRepo
 
-Operator -> Controller: 请求出库(设备ID)
-Controller -> Service: 执行出库前检查(设备ID)
-Service -> CertRepo: 查询最新证书(设备ID)
-CertRepo --> Service: 返回证书信息
+WH -> Controller: 发起紧急出库申请(设备ID, 申请信息)
+activate Controller
 
-alt 证书已过期
-    Service --> Controller: 返回“证书过期，出库被阻止”
-    Controller --> Operator: 显示阻止信息及“发起特批”选项
-    Operator -> Controller: 发起特批申请(设备ID, 声明)
-    Controller -> ApprovalService: 提交特批申请(设备ID, 声明)
-    ApprovalService --> Controller: 返回审批结果
-    alt 审批通过
-        Controller -> Service: 执行紧急出库(设备ID)
-        Service -> EquipRepo: 更新设备状态为“已出库”
-        EquipRepo --> Service: 更新成功
-        Service --> Controller: 返回出库成功
-        Controller --> Operator: 显示出库成功
-    else 审批驳回
-        Controller --> Operator: 显示“特批申请被驳回”
+Controller -> DeviceService: 校验设备状态(设备ID)
+activate DeviceService
+
+DeviceService -> DeviceRepo: 查询设备(设备ID)
+activate DeviceRepo
+DeviceRepo --> DeviceService: 返回设备实体
+deactivate DeviceRepo
+
+alt 设备状态为“校准过期”且“未锁定”
+    DeviceService --> Controller: 校验通过，设备可发起紧急审批
+else 设备状态异常
+    DeviceService --> Controller: 返回错误信息“设备状态不允许紧急出库”
+    Controller --> WH: 显示错误提示
+    deactivate Controller
+    deactivate DeviceService
     end
-else 证书有效期<7天
-    Service --> Controller: 返回“红色预警”
-    Controller --> Operator: 弹出红色预警，要求二次确认
-    Operator -> Controller: 确认并签署承诺书
-    Controller -> Service: 执行出库(设备ID)
-    Service -> EquipRepo: 更新设备状态为“已出库”
-    EquipRepo --> Service: 更新成功
-    Service --> Controller: 返回出库成功
-    Controller --> Operator: 显示出库成功
-else 证书有效期<30天
-    Service --> Controller: 返回“黄色预警”
-    Controller --> Operator: 弹出黄色预警，标记“预到期”
-    Controller -> Service: 执行出库(设备ID)
-    Service -> EquipRepo: 更新设备状态为“已出库”
-    EquipRepo --> Service: 更新成功
-    Service --> Controller: 返回出库成功
-    Controller --> Operator: 显示出库成功
-else 证书有效期>30天
-    Service --> Controller: 返回“证书正常”
-    Controller -> Service: 执行出库(设备ID)
-    Service -> EquipRepo: 更新设备状态为“已出库”
-    EquipRepo --> Service: 更新成功
-    Service --> Controller: 返回出库成功
-    Controller --> Operator: 显示出库成功
 end
 
+Controller -> ApprovalService: 创建紧急出库审批流程(设备ID, 申请信息)
+activate ApprovalService
+
+ApprovalService -> ApprovalService: 根据设备价值确定审批层级
+ApprovalService -> ApprovalRepo: 保存审批流程实例
+activate ApprovalRepo
+ApprovalRepo --> ApprovalService: 返回审批流程ID
+deactivate ApprovalRepo
+
+ApprovalService -> ApprovalService: 生成待办任务(第一签：业务对接人)
+ApprovalService --> Controller: 返回审批流程创建成功
+deactivate ApprovalService
+
+Controller --> WH: 提示“紧急出库审批已发起，请等待审批”
+deactivate Controller
+
+
 @enduml
 
 @startuml
-' 实体定义
-entity "设备" as Equipment {
-  + 设备ID (PK)
-  --
-  设备名称
-  设备型号
-  序列号
-  当前状态
-  位置
-  is_parts_incomplete
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID : UUID <<PK>>
+  + 品牌型号 : string
+  + 出厂编号 : string
+  + 注册证号 : string
+  + 当前状态 : string (在库/在租/在修/校准/报废)
+  + 库位ID : UUID <<FK>>
+  + 校准有效期 : date
+  + 设备价值 : decimal
 }
 
-entity "设备证书" as Certificate {
-  + 证书ID (PK)
-  --
-  设备ID (FK)
-  证书类型
-  有效期开始日期
-  有效期截止日期
-  证书文件
+table(设备档案) {
+  + 档案ID : UUID <<PK>>
+  + 设备ID : UUID <<FK>>
+  + 采购订单ID : UUID <<FK>>
+  + 入库日期 : date
+  + 入库检测结果 : text
+  + 创建时间 : datetime
 }
 
-entity "租赁合同" as Contract {
-  + 合同ID (PK)
-  --
-  合同编号
-  客户ID (FK)
-  签约日期
-  合同状态
-  24小时内变更次数
+table(采购订单) {
+  + 采购订单ID : UUID <<PK>>
+  + 供应商名称 : string
+  + 品牌型号 : string
+  + 出厂编号 : string
+  + 注册证号 : string
+  + 采购数量 : int
+  + 订单状态 : string
 }
 
-entity "合同变更单" as ChangeOrder {
-  + 变更单ID (PK)
-  --
-  合同ID (FK)
-  变更原因
-  变更内容
-  审批状态
-  创建时间
+table(租赁合同) {
+  + 合同ID : UUID <<PK>>
+  + 客户名称 : string
+  + 发票抬头 : string
+  + 纳税人识别号 : string
+  + 合同开始日期 : date
+  + 合同结束日期 : date
+  + 合同状态 : string
 }
 
-entity "紧急出库预约" as UrgentOutbound {
-  + 预约ID (PK)
-  --
-  合同ID (FK)
-  设备ID (FK)
-  发起人
-  紧急事由说明
-  审批状态
-  创建时间
+table(租金方案) {
+  + 方案ID : UUID <<PK>>
+  + 合同ID : UUID <<FK>>
+  + 计费方式 : string (固定周期/按次数/按使用量/混合)
+  + 计费单位 : string (月/次/小时/疗程)
+  + 单价 : decimal
+  + 阶梯规则 : text (可选)
 }
 
-entity "出库记录" as OutboundRecord {
-  + 出库记录ID (PK)
-  --
-  合同ID (FK)
-  设备ID (FK)
-  出库时间
-  操作人
-  状态确认单ID (FK)
+table(维保方案) {
+  + 方案ID : UUID <<PK>>
+  + 合同ID : UUID <<FK>>
+  + 服务等级 : string (基础/标准/高级)
+  + 服务内容 : text
+  + 服务单价 : decimal
 }
 
-entity "设备出库状态确认单" as StatusConfirm {
-  + 确认单ID (PK)
-  --
-  出库记录ID (FK)
-  影像资料
-  客户签名
-  创建时间
+table(出库单) {
+  + 出库单ID : UUID <<PK>>
+  + 合同ID : UUID <<FK>>
+  + 设备ID : UUID <<FK>>
+  + 出库类型 : string (正常/紧急放行)
+  + 出库日期 : datetime
+  + 库房人员ID : UUID <<FK>>
+  + 审批流程ID : UUID <<FK>> (可为空)
 }
 
-entity "归还记录" as ReturnRecord {
-  + 归还记录ID (PK)
-  --
-  设备ID (FK)
-  归还时间
-  操作人
-  附件完整性
-  检查维修记录ID (FK)
+table(归还检测单) {
+  + 检测单ID : UUID <<PK>>
+  + 出库单ID : UUID <<FK>>
+  + 设备ID : UUID <<FK>>
+  + 检测人员ID : UUID <<FK>>
+  + 复核人员ID : UUID <<FK>> (可为空)
+  + 检测结果 : string (通过/待维修)
+  + 检测详情 : text
 }
 
-entity "归还检查维修记录" as CheckRecord {
-  + 检查记录ID (PK)
-  --
-  设备ID (FK)
-  检测结果
-  功能测试通过
-  外观检查通过
-  其他异常
-  需人工复核
+table(审批流程) {
+  + 审批流程ID : UUID <<PK>>
+  + 关联业务ID : UUID <<FK>>
+  + 关联业务类型 : string (出库/合同变更)
+  + 当前节点 : int
+  + 审批状态 : string (待审批/通过/驳回)
+  + 创建时间 : datetime
 }
 
-entity "附件" as Accessory {
-  + 附件ID (PK)
-  --
-  设备ID (FK)
-  唯一编码
-  名称
-  类型
+table(预警记录) {
+  + 预警记录ID : UUID <<PK>>
+  + 设备ID : UUID <<FK>>
+  + 预警类型 : string (校准到期)
+  + 预警级别 : string (30天/15天/7天)
+  + 推送时间 : datetime
+  + 是否已处理 : boolean
 }
 
-entity "备件" as SparePart {
-  + 备件ID (PK)
-  --
-  备件名称
-  型号
-  当前库存数量
-  安全库存值
-}
-
-entity "维修工单" as RepairOrder {
-  + 工单ID (PK)
-  --
-  设备ID (FK)
-  故障描述
-  状态
-  创建时间
-}
-
-entity "库存差异单" as InventoryDiff {
-  + 差异单ID (PK)
-  --
-  备件ID (FK)
-  盘点时间
-  系统数量
-  实物数量
-  差异原因
-}
-
-' 关系定义
-Equipment ||--o{ Certificate : "拥有"
-Equipment ||--o{ Accessory : "包含"
-Equipment ||--o{ ReturnRecord : "被归还"
-Equipment ||--o{ RepairOrder : "关联维修"
-Equipment ||--o{ OutboundRecord : "被出库"
-
-Contract ||--o{ ChangeOrder : "发起"
-Contract ||--o{ UrgentOutbound : "发起"
-Contract ||--o{ OutboundRecord : "生成"
-
-OutboundRecord ||--|| StatusConfirm : "生成"
-
-ReturnRecord ||--|| CheckRecord : "依据"
-
-SparePart ||--o{ InventoryDiff : "产生"
-SparePart ||--o{ RepairOrder : "用于"
-
+设备 ||--o{ 设备档案 : 拥有
+采购订单 ||--o{ 设备档案 : 关联
+设备 ||--o{ 出库单 : 出库
+租赁合同 ||--o{ 出库单 : 包含
+租赁合同 ||--o{ 租金方案 : 包含
+租赁合同 ||--o{ 维保方案 : 包含
+出库单 ||--o{ 归还检测单 : 关联
+出库单 ||--o| 审批流程 : 触发 (紧急出库)
+设备 ||--o{ 预警记录 : 产生
 
 @enduml

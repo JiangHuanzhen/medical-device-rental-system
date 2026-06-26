@@ -1,0 +1,357 @@
+@startuml
+|库房人员|
+start
+:接收紧急出库申请;
+:检查设备校准状态;
+
+if (设备校准状态?) then (已过期)
+  :发起三方会签审批;
+  |库房主管|
+  :审批申请;
+  if (审批通过?) then (是)
+  else (否)
+    |库房人员|
+    :通知申请方无法出库;
+    stop
+  endif
+  |质控部门|
+  :进行安全与功能核查;
+  if (核查通过?) then (是)
+  else (否)
+    |库房人员|
+    :通知申请方设备不合格;
+    stop
+  endif
+  |科室主任|
+  :确认接收并承担风险;
+  if (确认接收?) then (是)
+  else (否)
+    |库房人员|
+    :取消出库流程;
+    stop
+  endif
+else (即将到期)
+  |库房人员|
+  :与客户确认风险自担;
+  if (客户确认?) then (是)
+    :记录补校准承诺日期;
+  else (否)
+    :取消出库;
+    stop
+  endif
+else (正常)
+  :执行标准出库流程;
+endif
+
+|库房人员|
+:生成出库单;
+:设备出库;
+:系统自动生成“待补校准报告”任务;
+:设置72小时补交期限;
+stop
+
+@enduml
+
+@startuml
+|招商业务员|
+start
+:接收归还设备;
+:发起归还检测流程;
+
+|运维工程师|
+:选择归还检测清单;
+:执行检测并录入数据;
+
+fork
+  :录入电气安全等关键项数据;
+fork again
+  :录入一般项数据;
+end fork
+
+:系统自动比对出厂基准值;
+
+if (偏差超出阈值?) then (是)
+  :标记为“异常”;
+  :阻止正常收回流程;
+  |招商业务员|
+  :发起“设备状态异常处理单”;
+  if (处理方案?) then (维修)
+    |运维工程师|
+    :执行维修流程;
+  else (降级)
+    |招商业务员|
+    :更新设备等级;
+  else (报废)
+    |招商业务员|
+    :发起报废流程;
+  endif
+  stop
+else (否)
+  :标记为“正常”;
+endif
+
+|运维工程师|
+if (检测项包含关键项?) then (是)
+  :执行100%双人复核;
+  if (复核通过?) then (是)
+  else (否)
+    :标记为“异常”;
+    :阻止正常收回流程;
+    stop
+  endif
+endif
+
+|招商业务员|
+:完成设备收回;
+:更新设备状态为“在库”;
+stop
+
+@enduml
+
+@startuml
+|财务人员|
+start
+:发起押金扣款申请;
+:输入扣款金额;
+
+if (扣款金额 <= 5000?) then (是)
+  :系统自动触发扣款;
+  :生成电子凭证;
+  stop
+else (否)
+  if (扣款金额 <= 50000?) then (是)
+    |业务经理|
+    :初审扣款申请;
+    if (初审通过?) then (是)
+      |财务经理|
+      :复核扣款申请;
+      if (复核通过?) then (是)
+        |财务人员|
+        :系统执行扣款;
+        stop
+      else (否)
+        :驳回申请;
+        stop
+      endif
+    else (否)
+      :驳回申请;
+      stop
+    endif
+  else (否)
+    |业务总监|
+    :审批扣款申请;
+    if (审批通过?) then (是)
+      |财务总监|
+      :审批扣款申请;
+      if (审批通过?) then (是)
+        |总经理|
+        :审批扣款申请;
+        if (审批通过?) then (是)
+          |财务人员|
+          :系统执行扣款;
+          stop
+        else (否)
+          :驳回申请;
+          stop
+        endif
+      else (否)
+        :驳回申请;
+        stop
+      endif
+    else (否)
+      :驳回申请;
+      stop
+    endif
+  endif
+endif
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+participant "合同录入界面" as UI
+participant "合同Controller" as Controller
+participant "发票校验Service" as InvoiceService
+participant "资料预检Service" as DocCheckService
+participant "合同Repository" as Repository
+
+Sales -> UI: 录入租赁合同信息
+UI -> Controller: 提交合同数据
+Controller -> InvoiceService: 校验发票信息(发票抬头, 税号等)
+alt 发票信息格式错误
+    InvoiceService --> Controller: 返回校验失败及错误详情
+    Controller --> UI: 显示错误信息，阻止提交
+    UI --> Sales: 提示修正发票信息
+    Sales -> UI: 修正后重新提交
+    UI -> Controller: 重新提交合同数据
+    Controller -> InvoiceService: 重新校验发票信息
+end
+InvoiceService --> Controller: 校验成功
+
+Controller -> DocCheckService: 校验客户资料(资料清单)
+alt 资料缺失或格式错误
+    DocCheckService --> Controller: 返回校验失败及缺失项
+    Controller --> UI: 显示缺失资料清单
+    UI --> Sales: 提示补充资料
+    Sales -> UI: 上传补充资料
+    UI -> Controller: 重新提交资料
+    Controller -> DocCheckService: 重新校验资料
+end
+DocCheckService --> Controller: 校验成功
+
+Controller -> Repository: 保存合同草稿
+Repository --> Controller: 保存成功
+Controller --> UI: 返回成功，合同进入待审批状态
+UI --> Sales: 显示合同已保存，可发起审批
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID (PK)
+  --
+  设备名称
+  设备型号
+  序列号
+  出厂基准数据
+  当前状态 (在库/出租/维修/校准中)
+  校准有效期
+  设备类型
+}
+
+table(设备类型) {
+  + 类型ID (PK)
+  --
+  类型名称
+  出库检测模板ID (FK)
+  归还检测模板ID (FK)
+}
+
+table(检测模板) {
+  + 模板ID (PK)
+  --
+  模板名称
+  模板类型 (出库/归还)
+  创建时间
+}
+
+table(检测项) {
+  + 检测项ID (PK)
+  --
+  检测项名称
+  是否关键项
+  阈值
+  模板ID (FK)
+}
+
+table(检测记录) {
+  + 记录ID (PK)
+  --
+  设备ID (FK)
+  检测模板ID (FK)
+  检测时间
+  检测人
+  复核人
+  检测结果 (正常/异常)
+}
+
+table(检测数据) {
+  + 数据ID (PK)
+  --
+  记录ID (FK)
+  检测项ID (FK)
+  录入值
+  是否异常
+}
+
+table(租赁合同) {
+  + 合同ID (PK)
+  --
+  合同编号
+  客户名称
+  计费方式
+  开始日期
+  结束日期
+  合同状态
+}
+
+table(合同设备) {
+  + 合同ID (FK)
+  + 设备ID (FK)
+  --
+  出库时间
+  预计归还时间
+  实际归还时间
+}
+
+table(出库单) {
+  + 出库单ID (PK)
+  --
+  合同ID (FK)
+  设备ID (FK)
+  出库类型 (标准/紧急)
+  出库时间
+  审批状态
+  补校准承诺日期
+}
+
+table(紧急出库审批) {
+  + 审批ID (PK)
+  --
+  出库单ID (FK)
+  审批人角色
+  审批人
+  审批时间
+  审批结果
+  审批意见
+}
+
+table(押金扣款申请) {
+  + 申请ID (PK)
+  --
+  合同ID (FK)
+  扣款金额
+  扣款原因
+  申请时间
+  当前审批节点
+  审批状态
+}
+
+table(扣款审批记录) {
+  + 记录ID (PK)
+  --
+  申请ID (FK)
+  审批人角色
+  审批人
+  审批时间
+  审批结果
+  审批意见
+}
+
+table(设备状态异常处理单) {
+  + 处理单ID (PK)
+  --
+  设备ID (FK)
+  异常类型 (校准过期/功能异常)
+  发现时间
+  处理方案 (维修/降级/报废)
+  处理结果
+}
+
+设备 }o--|| 设备类型 : 属于
+设备类型 ||--o{ 检测模板 : 拥有
+检测模板 ||--o{ 检测项 : 包含
+设备 ||--o{ 检测记录 : 经历
+检测记录 ||--o{ 检测数据 : 包含
+检测项 ||--o{ 检测数据 : 记录
+租赁合同 ||--o{ 合同设备 : 包含
+合同设备 }o--|| 设备 : 关联
+合同设备 ||--o{ 出库单 : 生成
+出库单 ||--o{ 紧急出库审批 : 需要
+租赁合同 ||--o{ 押金扣款申请 : 发起
+押金扣款申请 ||--o{ 扣款审批记录 : 包含
+设备 ||--o{ 设备状态异常处理单 : 触发
+
+@enduml

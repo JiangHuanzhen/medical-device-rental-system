@@ -1,0 +1,218 @@
+@startuml
+|#LightBlue|招商业务员|
+start
+:进行设备归还初检;
+:录入检测数据;
+|#LightGreen|系统|
+:自动比对出厂基准数据;
+if (检测数据偏差是否在预警阈值内?) then (是)
+  :标记为“正常”;
+  |#LightYellow|库房人员|
+  :复核关键参数;
+  if (复核通过?) then (是)
+    |#LightGreen|系统|
+    :完成收回，更新设备状态为“在库”;
+    stop
+  else (否)
+    :标记为“复核异常”;
+    |#LightGreen|系统|
+    :生成异常记录;
+    :触发财务待办任务;
+    stop
+  endif
+else (否)
+  if (检测数据偏差是否在干预阈值内?) then (是)
+    |#LightGreen|系统|
+    :弹出警告窗口，阻断“完成收回”;
+    :强制将设备状态转为“待维修”;
+    :终结当前检测流程;
+    :自动创建维修工单;
+    stop
+  else (否)
+    |#LightGreen|系统|
+    :弹出红色警告，阻断默认流程;
+    :生成待办事项，推送至财务与运营;
+    |#LightBlue|财务/运营负责人|
+    if (审核是否强制通过?) then (是)
+      |#LightGreen|系统|
+      :记录强制通过原因;
+      :完成收回，更新设备状态为“在库”;
+      stop
+    else (否)
+      |#LightGreen|系统|
+      :强制将设备状态转为“待维修”;
+      :自动创建维修工单;
+      stop
+    endif
+  endif
+endif
+
+@enduml
+
+@startuml
+|#LightGreen|系统|
+start
+:定时任务: 扫描所有设备校准有效期;
+while (是否还有未检查的设备?) is (是)
+  :获取下一台设备;
+  if (设备状态是否为“已出租”?) then (是)
+    :跳过 (责任已转移);
+  else (否)
+    if (距离校准到期日 <= 3天?) then (是)
+      |#LightGreen|系统|
+      fork
+        :执行锁库操作;
+      fork again
+        :发送“到期预警及锁库通知”;
+      end fork
+    else (否)
+      if (距离校准到期日 <= 7天?) then (是)
+        |#LightGreen|系统|
+        :发送“到期前提醒”;
+      else (否)
+        :不做任何操作;
+      endif
+    endif
+  endif
+endwhile
+|#LightGreen|系统|
+:完成一轮扫描;
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|招商业务员|
+start
+:发起设备出库申请;
+|#LightGreen|系统|
+:检查设备校准有效期;
+if (距离校准到期日 <= 3天?) then (是)
+  :设备已被锁库;
+  :拒绝出库申请;
+  :提示“设备已锁库，无法出库”;
+  stop
+else (否)
+  if (距离校准到期日 <= 7天?) then (是)
+    :禁止出库;
+    :提示“设备即将到期，禁止出库，请先安排校准”;
+    stop
+  else (否)
+    :允许出库;
+    |#LightBlue|招商业务员|
+    :执行出库操作;
+    :更新设备状态为“出库在途”;
+    stop
+  endif
+endif
+
+@enduml
+
+@startuml
+actor 招商业务员 as Sales
+actor 库房人员 as Keeper
+participant "设备归还Controller" as Controller
+participant "检测Service" as Service
+participant "设备Repository" as DeviceRepo
+participant "维修工单Repository" as RepairRepo
+participant "财务待办Repository" as FinanceRepo
+
+Sales -> Controller: 提交检测数据(设备ID, 检测结果)
+Controller -> Service: processReturnCheck(设备ID, 检测结果)
+Service -> DeviceRepo: findDeviceById(设备ID)
+DeviceRepo --> Service: 返回设备信息(含出厂基准)
+
+Service -> Service: 比对检测数据与出厂基准
+
+alt 数据偏差在预警阈值内
+    Service -> DeviceRepo: updateDeviceStatus(设备ID, "待复核")
+    Controller -> Keeper: 请求复核(设备ID)
+    Keeper -> Controller: 提交复核结果(通过)
+    Controller -> Service: confirmReturnCheck(设备ID, true)
+    Service -> DeviceRepo: updateDeviceStatus(设备ID, "在库")
+    Service --> Controller: 返回成功
+    Controller --> Sales: 显示“归还成功”
+
+else 数据偏差在干预阈值内
+    Service -> DeviceRepo: updateDeviceStatus(设备ID, "待维修")
+    Service -> RepairRepo: createRepairOrder(设备ID, 偏差数据)
+    Service --> Controller: 返回异常(需创建维修工单)
+    Controller --> Sales: 显示“检测异常，已创建维修工单”
+
+else 数据偏差超出干预阈值
+    Service -> DeviceRepo: updateDeviceStatus(设备ID, "待审核")
+    Service -> FinanceRepo: createFinanceTask(设备ID, 偏差数据)
+    Service --> Controller: 返回严重异常(需财务审核)
+    Controller --> Sales: 显示“严重异常，等待财务审核”
+    Controller -> Keeper: 通知复核(设备ID)
+    Keeper -> Controller: 提交复核结果(不通过)
+    Controller -> Service: rejectReturnCheck(设备ID)
+    Service -> DeviceRepo: updateDeviceStatus(设备ID, "待维修")
+    Service -> RepairRepo: createRepairOrder(设备ID, 偏差数据)
+    Service --> Controller: 返回成功
+    Controller --> Sales: 显示“已转维修”
+end
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID: UUID [PK]
+  --
+  设备名称: string
+  型号: string
+  出厂基准数据: JSON
+  当前状态: enum (在库, 出库在途, 待验收, 已出租, 维修中, 校准中, 报废)
+  校准有效期: date
+  创建时间: datetime
+}
+
+table(检测记录) {
+  + 检测记录ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  检测类型: enum (入库, 归还, 定期)
+  检测人ID: UUID [FK]
+  复核人ID: UUID [FK]
+  检测数据: JSON
+  复核结果: enum (通过, 不通过)
+  检测时间: datetime
+}
+
+table(维修工单) {
+  + 工单ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  创建人ID: UUID [FK]
+  问题描述: text
+  工单状态: enum (待处理, 处理中, 已完成)
+  创建时间: datetime
+  完成时间: datetime
+}
+
+table(财务待办) {
+  + 待办ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  关联记录ID: UUID [FK]
+  待办类型: enum (押金扣款, 折旧调整)
+  状态: enum (待处理, 已完成)
+  创建时间: datetime
+}
+
+table(用户) {
+  + 用户ID: UUID [PK]
+  --
+  用户名: string
+  角色: enum (招商业务员, 库房人员, 运维工程师, 财务)
+}
+
+设备 ||--o{ 检测记录 : "有"
+设备 ||--o{ 维修工单 : "触发"
+设备 ||--o{ 财务待办 : "触发"
+用户 ||--o{ 检测记录 : "执行/复核"
+用户 ||--o{ 维修工单 : "创建"
+
+@enduml

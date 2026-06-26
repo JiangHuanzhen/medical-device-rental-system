@@ -1,0 +1,111 @@
+@startuml
+```plantuml
+@startuml
+' Actor定义
+actor "招商业务员" as biz
+actor "库房人员" as store
+actor "运维工程师" as ops
+actor "质控部门" as qc
+actor "科室主任" as dept_head
+actor "财务审核员" as finance
+
+' 用例定义
+usecase (UC1: 设备校准预警) as UC1
+usecase (UC2: 紧急出库审批) as UC2
+usecase (UC3: 设备归还检测) as UC3
+usecase (UC4: 设备出库检测) as UC4
+usecase (UC5: 设备入库检测) as UC5
+usecase (UC6: 校准到期锁库) as UC6
+usecase (UC7: 设备状态监控) as UC7
+usecase (UC8: 设备校准记录管理) as UC8
+usecase (UC9: 设备档案管理) as UC9
+
+' Actor与用例关联
+biz --> UC1
+biz --> UC2
+biz --> UC3
+biz --> UC7
+
+store --> UC1
+store --> UC3
+store --> UC4
+store --> UC5
+store --> UC6
+store --> UC7
+
+ops --> UC1
+ops --> UC3
+ops --> UC4
+ops --> UC5
+ops --> UC6
+ops --> UC7
+ops --> UC8
+
+qc --> UC2
+qc --> UC3
+qc --> UC6
+
+dept_head --> UC2
+
+finance --> UC2 : 高价值设备场景
+
+' Include关系
+UC3 ..> UC5 : <<include>>\n复用入库检测模板
+UC4 ..> UC5 : <<include>>\n复用入库检测模板
+
+' Extend关系
+UC2 ..> UC6 : <<extend>>\n校准到期触发
+UC3 ..> UC1 : <<extend>>\n检测异常触发预警
+
+' 注解
+note right of UC1
+  合并自BR-EQP-001/003/006
+  覆盖全状态设备校准预警
+end note
+
+note right of UC2
+  合并自BR-EQP-002/007/012/013/014
+  三级审批流程：科室主任→库房主管→质控部门
+  条件性触发财务审核
+end note
+
+note right of UC3
+  合并自BR-EQP-004/005/008/009/010
+  强制业务员初检→库房复核流程
+  自动比对出厂基准值
+end note
+
+note right of UC4
+  合并自BR-EQP-011
+  非关键项默认50%抽检
+  支持动态调整
+end note
+
+note right of UC5
+  标准化检测模板
+  作为UC3和UC4的include基础
+end note
+
+note right of UC6
+  实现7天禁止出库/3天强制锁库
+  作为UC2的extend触发条件
+end note
+
+note right of UC7
+  实时监控设备状态
+  覆盖在途/待验收/已出租状态
+end note
+
+note right of UC8
+  校准记录管理
+  支持梯次预警配置
+end note
+
+note right of UC9
+  设备全生命周期档案
+  包含校准状态信息
+end note
+
+@enduml
+```
+@enduml

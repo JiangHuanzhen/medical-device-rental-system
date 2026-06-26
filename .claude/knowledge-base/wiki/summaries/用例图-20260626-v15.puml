@@ -1,0 +1,82 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+actor "库房人员" as WH
+actor "招商业务员" as BM
+actor "运维工程师" as OE
+actor "财务" as FIN
+
+rectangle "设备管理系统" {
+  usecase "UC1: 监控设备校准状态" as UC1
+  usecase "UC2: 执行设备归还检测" as UC2
+  usecase "UC3: 复核设备检测结果" as UC3
+  usecase "UC4: 处理检测异常" as UC4
+  usecase "UC5: 管理设备状态" as UC5
+  usecase "UC6: 触发校准预警" as UC6
+  usecase "UC7: 执行设备锁库" as UC7
+  usecase "UC8: 审核异常设备入库" as UC8
+  usecase "UC9: 查看财务待办任务" as UC9
+}
+
+' Actor 关联
+WH --> UC1
+WH --> UC2
+WH --> UC3
+WH --> UC5
+BM --> UC1
+BM --> UC2
+BM --> UC5
+OE --> UC4
+OE --> UC5
+FIN --> UC8
+FIN --> UC9
+
+' include 关系
+UC2 .> UC5 : <<include>>
+UC4 .> UC5 : <<include>>
+
+' extend 关系
+UC2 ..> UC3 : <<extend>>
+UC2 ..> UC4 : <<extend>>
+
+' 注解
+note right of UC1
+  合并自BR-EQP-001、BR-EQP-007
+  覆盖所有设备状态（在库/在途/待验收/已出租）
+end note
+
+note right of UC2
+  合并自BR-EQP-004、BR-EQP-005、BR-EQP-008、BR-EQP-009
+  包含标准化检测清单、双人初检、自动比对
+end note
+
+note right of UC3
+  拆分自BR-EQP-013、BR-EQP-014、BR-EQP-015、BR-EQP-016、BR-EQP-017
+  仅对系统标记的"可疑项"进行复核
+end note
+
+note right of UC4
+  合并自BR-EQP-006、BR-EQP-010、BR-EQP-011、BR-EQP-012
+  分级处理：预警/强制锁定/触发维修工单/生成财务待办
+end note
+
+note right of UC6
+  独立逻辑（BR-EQP-003）
+  到期前7天仅触发提醒
+end note
+
+note right of UC7
+  独立逻辑（BR-EQP-002、BR-EQP-003）
+  到期前3天同时触发提醒和锁库
+end note
+
+note right of UC8
+  特殊审批通道（BR-EQP-011）
+  允许财务主管/区域经理在审核后强制通过
+end note
+
+@enduml
+```
+@enduml
