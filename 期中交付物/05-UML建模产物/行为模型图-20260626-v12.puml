@@ -1,0 +1,262 @@
+@startuml
+|招商业务员|
+start
+:发起设备出库申请;
+
+|系统|
+:检查设备校准有效期;
+if (校准有效期 <= 7天?) then (是)
+  :触发“禁止出库”预警;
+  |招商业务员|
+  :收到预警通知，协调客户更换设备或安排校准;
+  :重新发起出库申请;
+  |系统|
+  if (校准有效期 <= 3天?) then (是)
+    :自动锁定设备库位，禁止所有出库操作;
+    |库房人员|
+    :发现设备被锁库，临床急需使用;
+    :发起“紧急放行”审批单;
+    |系统|
+    :记录审批单，生成追溯编号;
+    |设备科长 & 质控人员|
+    :进行双重签字审批;
+    |系统|
+    if (审批通过?) then (是)
+      :临时解锁设备;
+      |运维工程师|
+      :确认出库后24小时内完成校准或更换;
+      :设备出库;
+      |系统|
+      :记录违规风险，限制后续紧急权限;
+      stop
+    else (否)
+      :拒绝出库，保持锁定状态;
+      stop
+    endif
+  else (否)
+    :允许出库，但记录预警;
+    stop
+  endif
+else (否)
+  :允许正常出库;
+  stop
+endif
+
+@enduml
+
+@startuml
+|招商业务员|
+start
+:使用标准检测模板，录入设备归还初检数据;
+
+|系统|
+:自动将初检数据与出厂基准值进行比对;
+if (偏差超出预设阈值?) then (是)
+  :弹出“异常”提醒，阻止正常收回流程;
+  |招商业务员|
+  :确认处理方案 (维修/降级/报废);
+  if (选择维修?) then (是)
+    |系统|
+    :自动生成维修工单，关联该设备;
+    :更新设备状态为“待维修”;
+    stop
+  else (否)
+    :选择降级或报废;
+    |系统|
+    :更新设备状态及折旧信息;
+    stop
+  endif
+else (否)
+  :初检数据正常，等待复核;
+  |库房人员|
+  :登录系统，查看待复核列表;
+  |系统|
+  if (业务代表已完成初检?) then (是)
+    :展示复核界面;
+    |库房人员|
+    :执行复核操作，确认检测结果;
+    |系统|
+    if (复核通过?) then (是)
+      :完成归还流程，设备入库;
+      stop
+    else (否)
+      :标记为“复核异常”，退回初检环节;
+      stop
+    endif
+  else (否)
+    :提示“请等待业务代表完成初检”;
+    stop
+  endif
+endif
+
+@enduml
+
+@startuml
+|系统|
+start
+:每日凌晨扫描所有非“报废/丢失”状态的设备;
+fork
+  :检查设备校准有效期;
+  fork again
+  :检查设备状态 (在库/在途/出租/待验收等);
+end fork
+:生成临期设备清单;
+
+|库房人员|
+:每周一上午9点，接收“临期设备清单”推送;
+
+|系统|
+:检查每个设备距校准到期的天数;
+if (距到期 == 30天?) then (是)
+  :上午10点，发送“30天预警”通知;
+elseif (距到期 == 15天?) then (是)
+  :上午10点，发送“15天预警”通知;
+elseif (距到期 == 7天?) then (是)
+  :上午10点，发送“7天预警”通知;
+  :触发“禁止出库”规则;
+elseif (距到期 <= 3天?) then (是)
+  :自动锁定设备库位;
+  :发送“锁库”通知;
+else (否)
+  :无操作;
+endif
+stop
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+actor "库房人员" as Keeper
+participant "归还检测Controller" as Controller
+participant "设备检测Service" as Service
+participant "设备Repository" as Repository
+
+Sales -> Controller: 1. 提交归还检测数据(设备ID, 检测值)
+activate Controller
+
+Controller -> Service: 2. 请求处理归还检测(设备ID, 检测值)
+activate Service
+
+Service -> Repository: 3. 获取设备出厂基准值(设备ID)
+activate Repository
+Repository --> Service: 4. 返回基准值
+deactivate Repository
+
+Service -> Service: 5. 比对检测值与基准值，计算偏差
+
+alt 偏差超出阈值
+    Service --> Controller: 6. 返回异常结果(偏差值, 异常标识)
+    Controller --> Sales: 7. 显示异常提醒，阻止正常收回
+    Sales -> Controller: 8. 确认处理方案(维修)
+    Controller -> Service: 9. 请求生成维修工单(设备ID, 异常描述)
+    activate Service
+    Service -> Repository: 10. 保存维修工单
+    Repository --> Service: 11. 保存成功
+    Service --> Controller: 12. 返回工单生成成功
+    deactivate Service
+    Controller --> Sales: 13. 显示维修工单已生成
+else 偏差在阈值内
+    Service --> Controller: 14. 返回初检成功
+    Controller --> Sales: 15. 显示初检成功，等待复核
+    Controller --> Keeper: 16. 通知有新的待复核任务
+    Keeper -> Controller: 17. 请求查看待复核列表
+    Controller -> Service: 18. 获取待复核列表
+    Service -> Repository: 19. 查询待复核设备
+    Repository --> Service: 20. 返回列表
+    Service --> Controller: 21. 返回列表
+    Controller --> Keeper: 22. 显示待复核列表
+    Keeper -> Controller: 23. 提交复核结果(通过)
+    Controller -> Service: 24. 确认复核通过(设备ID)
+    Service -> Repository: 25. 更新设备状态为“在库”
+    Repository --> Service: 26. 更新成功
+    Service --> Controller: 27. 返回复核成功
+    Controller --> Keeper: 28. 显示复核成功，设备入库
+end
+deactivate Service
+deactivate Controller
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+!define primary_key(x) <u>x</u>
+!define foreign_key(x) <color:blue><u>x</u></color>
+
+table(设备) {
+  + primary_key(设备ID) : UUID
+  + 设备名称 : String
+  + 设备型号 : String
+  + 出厂基准值 : JSON
+  + 当前状态 : Enum (在库, 出租, 在途, 待验收, 维修, 校准中, 报废)
+  + 校准有效期 : Date
+  + 供应商等级 : String
+}
+
+table(设备状态变更记录) {
+  + primary_key(记录ID) : UUID
+  + foreign_key(设备ID) : UUID
+  + 变更前状态 : Enum
+  + 变更后状态 : Enum
+  + 变更时间 : DateTime
+  + 操作人 : String
+}
+
+table(检测模板) {
+  + primary_key(模板ID) : UUID
+  + 模板名称 : String
+  + 检测项列表 : JSON
+  + 版本号 : Integer
+}
+
+table(检测记录) {
+  + primary_key(检测记录ID) : UUID
+  + foreign_key(设备ID) : UUID
+  + foreign_key(模板ID) : UUID
+  + 检测类型 : Enum (出库, 归还, 入库)
+  + 检测人 : String
+  + 检测时间 : DateTime
+  + 检测结果 : JSON
+  + 是否复核 : Boolean
+  + 复核人 : String
+  + 复核时间 : DateTime
+  + 复核结果 : Enum (通过, 不通过)
+}
+
+table(校准预警规则) {
+  + primary_key(规则ID) : UUID
+  + 预警时间点 : Integer (天)
+  + 预警动作 : Enum (通知, 禁止出库, 锁库)
+  + 是否启用 : Boolean
+}
+
+table(紧急审批单) {
+  + primary_key(审批单ID) : UUID
+  + foreign_key(设备ID) : UUID
+  + 申请原因 : String
+  + 预计归还时间 : Date
+  + 替代方案 : String
+  + 申请人 : String
+  + 审批人1 : String
+  + 审批人2 : String
+  + 审批状态 : Enum (待审批, 通过, 拒绝)
+  + 追溯编号 : String
+}
+
+table(维修工单) {
+  + primary_key(工单ID) : UUID
+  + foreign_key(设备ID) : UUID
+  + 工单类型 : Enum (维修, 校准, 更换)
+  + 异常描述 : String
+  + 处理方案 : String
+  + 处理人 : String
+  + 处理时间 : DateTime
+  + 状态 : Enum (待处理, 处理中, 已完成)
+}
+
+设备 ||--o{ 设备状态变更记录 : 拥有
+设备 ||--o{ 检测记录 : 参与
+检测模板 ||--o{ 检测记录 : 定义
+设备 ||--o{ 紧急审批单 : 关联
+设备 ||--o{ 维修工单 : 产生
+
+@enduml

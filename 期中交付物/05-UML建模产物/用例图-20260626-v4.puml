@@ -1,0 +1,113 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+actor "招商业务员" as Sales
+actor "库房人员" as Warehouse
+actor "运维工程师" as Ops
+actor "质控部门" as QC
+actor "科室主任" as DeptHead
+actor "系统" as System
+
+rectangle "设备管理" {
+  usecase "UC1: 校准有效期预警" as UC1
+  usecase "UC2: 紧急出库审批" as UC2
+  usecase "UC3: 设备归还检测" as UC3
+  usecase "UC4: 设备状态异常处理" as UC4
+  usecase "UC5: 设备锁库" as UC5
+  usecase "UC6: 设备归还" as UC6
+  usecase "UC7: 校准预警通知" as UC7
+  usecase "UC8: 设备出库" as UC8
+  usecase "UC9: 设备入库" as UC9
+  usecase "UC10: 设备档案管理" as UC10
+}
+
+' Actor 与用例关联
+Sales --> UC1
+Sales --> UC2
+Sales --> UC3
+Sales --> UC4
+Warehouse --> UC1
+Warehouse --> UC2
+Warehouse --> UC3
+Warehouse --> UC5
+Warehouse --> UC6
+Warehouse --> UC8
+Warehouse --> UC9
+Ops --> UC1
+Ops --> UC3
+Ops --> UC6
+QC --> UC2
+QC --> UC4
+DeptHead --> UC2
+System --> UC7
+
+' include 关系
+UC2 ..> UC5 : <<include>>
+UC3 ..> UC9 : <<include>>
+
+' extend 关系
+UC1 ..> UC7 : <<extend>>
+UC6 ..> UC4 : <<extend>>
+
+note right of UC1
+  合并自 BR-EQP-001, BR-EQP-005, BR-EQP-010, BR-EQP-019
+  核心业务价值：确保所有设备校准状态合规
+end note
+
+note right of UC2
+  合并自 BR-EQP-002, BR-EQP-003, BR-EQP-008, BR-EQP-009, BR-EQP-012, BR-EQP-013, BR-EQP-014, BR-EQP-020, BR-EQP-021
+  核心业务价值：为校准过期设备提供受控出库通道
+  注意：不同涉众对签字顺序有分歧，最终采用"科室主任→库房主管→质控部门"
+end note
+
+note right of UC3
+  合并自 BR-EQP-004, BR-EQP-007, BR-EQP-016, BR-EQP-018
+  核心业务价值：标准化设备归还检测流程
+  包含入库检测模板（UC9）确保一致性
+end note
+
+note right of UC4
+  拆分自 BR-EQP-006
+  与UC2业务流程完全不同，故拆分为独立用例
+end note
+
+note right of UC7
+  扩展自 UC1，在特定条件下触发
+  合并自 BR-EQP-011, BR-EQP-015, BR-EQP-017
+  通知频率：每周一推送+到期前30/15/7天提醒
+end note
+
+note right of Sales
+  映射自"招商业务员"涉众
+  主要关注设备租赁相关流程
+end note
+
+note right of Warehouse
+  映射自"库房人员"涉众
+  主要关注设备出入库和状态管理
+end note
+
+note right of Ops
+  映射自"运维工程师"涉众
+  主要关注设备技术状态和检测
+end note
+
+note right of QC
+  映射自"质控部门"涉众
+  作为审批节点参与紧急出库和异常处理
+end note
+
+note right of DeptHead
+  映射自"科室主任"涉众
+  作为审批节点参与紧急出库
+end note
+
+note right of System
+  系统作为主动Actor，负责触发定时通知
+end note
+
+@enduml
+```
+@enduml

@@ -1,0 +1,105 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' =============================================
+' 第一步：涉众 → Actor 映射
+' =============================================
+actor "招商业务员" as Sales
+actor "库房人员" as WH
+actor "运维工程师" as Ops
+actor "财务" as Finance
+actor "质控人员" as QC
+actor "设备科长" as Mgr
+
+' =============================================
+' 第二步：从需求中提取用例
+' =============================================
+rectangle "设备校准合规管理" {
+  ' --- 核心用例 ---
+  usecase (UC1) as "UC1\n设备出库校准检查"
+  usecase (UC2) as "UC2\n管理校准预警通知"
+  usecase (UC3) as "UC3\n发起紧急出库审批"
+  usecase (UC4) as "UC4\n审批紧急出库申请"
+  usecase (UC5) as "UC5\n确认紧急出库风险"
+  usecase (UC6) as "UC6\n查看设备校准状态"
+  usecase (UC7) as "UC7\n更新设备校准记录"
+  usecase (UC8) as "UC8\n管理校准预警策略"
+  usecase (UC9) as "UC9\n追踪紧急出库设备"
+}
+
+' =============================================
+' 第三步：建立关系
+' =============================================
+
+' --- Actor 与用例关联 ---
+Sales --> UC1
+Sales --> UC3
+Sales --> UC6
+
+WH --> UC1
+WH --> UC2
+WH --> UC3
+WH --> UC5
+WH --> UC6
+WH --> UC7
+
+Ops --> UC2
+Ops --> UC6
+Ops --> UC7
+Ops --> UC8
+
+Finance --> UC6
+Finance --> UC9
+
+QC --> UC4
+Mgr --> UC4
+
+' --- <<include>> 关系 ---
+UC3 .> UC5 : <<include>>\n必须完成风险确认
+UC3 .> UC6 : <<include>>\n必须查看设备状态
+
+' --- <<extend>> 关系 ---
+UC1 ..> UC3 : <<extend>>\n校准过期时触发
+UC2 ..> UC8 : <<extend>>\n需调整预警策略时
+
+' =============================================
+' 第四步：附加注解
+' =============================================
+note right of Sales
+  **Actor映射决策**
+  招商业务员：直接参与出库操作
+  库房人员：核心操作者，涉及多个用例
+  运维工程师：系统配置与校准管理
+  财务：审计与追溯视角
+  质控人员/设备科长：审批角色
+end note
+
+note right of UC3
+  **用例合并理由**
+  多个需求（BR-EQP-001~009）均指向
+  "紧急出库审批"这一完整业务流程，
+  合并为一个用例，通过不同审批节点
+  体现权限差异。
+end note
+
+note right of UC2
+  **用例拆分理由**
+  预警通知（UC2）与预警策略配置（UC8）
+  业务流程不同：前者是日常接收通知，
+  后者是系统配置，故拆分为两个用例。
+end note
+
+note right of UC5
+  **用例合并理由**
+  BR-EQP-010~012均描述风险确认流程，
+  合并为"确认紧急出库风险"用例，
+  包含电子签章/文件上传等具体实现方式。
+end note
+
+@enduml
+```
+@enduml

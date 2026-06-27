@@ -1,0 +1,339 @@
+@startuml
+|#LightBlue|库房人员|
+start
+:发起紧急出库申请;
+:填写紧急出库原因及设备信息;
+
+|#LightGreen|科室主任|
+:审核紧急出库必要性;
+if (是否同意?) then (是)
+  :签署同意意见;
+else (否)
+  :驳回申请;
+  stop
+endif
+
+|#LightYellow|库房主管|
+:审核设备库存及替代方案;
+if (是否有替代设备?) then (是)
+  :驳回申请，建议使用替代设备;
+  stop
+else (否)
+  :签署同意意见;
+endif
+
+|#LightCoral|质控部门|
+:评估合规风险及财务影响;
+if (风险是否可控?) then (是)
+  :签署同意意见;
+else (否)
+  :驳回申请;
+  stop
+endif
+
+|#LightBlue|库房人员|
+:执行紧急出库操作;
+:系统自动加盖“紧急放行”标识;
+
+fork
+  :系统生成“待补校准报告”任务(72小时);
+fork again
+  :系统触发“事后补签”待办给财务负责人和技术负责人;
+end fork
+
+:设备出库;
+
+|#LightCoral|财务负责人|
+:事后补签确认;
+|#LightGray|技术负责人|
+:事后补签确认;
+
+|#LightBlue|系统|
+:等待补交校准报告;
+if (72小时内是否补交?) then (是)
+  :报告校验通过;
+  |#LightCoral|财务人员|
+  :人工确认设备状态及账务;
+  :设备状态恢复为“可用”;
+else (否)
+  :标记为“违规操作”;
+  :触发设备召回流程;
+  stop
+endif
+
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|库房人员|
+start
+:扫描设备信息(品牌型号、出厂编号、注册证号);
+
+|#LightGray|系统|
+:读取采购订单信息;
+:比对实物信息与采购订单;
+
+if (信息是否一致?) then (是)
+  :生成“入库单”;
+  :设备状态设为“待检测”;
+  |#LightBlue|库房人员|
+  :执行入库检测(标准检查清单);
+  if (检测是否通过?) then (是)
+    :设备入库，状态设为“可用”;
+    stop
+  else (否)
+    :设备标记为“检测异常”;
+    :进入维修或报废流程;
+    stop
+  endif
+else (否)
+  :自动生成“异常标记”;
+  :暂停入库操作;
+
+  fork
+    :推送通知给采购部门;
+  fork again
+    :推送通知给质检部门;
+  end fork
+
+  |#LightBlue|库房人员|
+  :等待异常处理结果;
+  if (异常是否可现场解决?) then (是)
+    :与采购/质检沟通，现场修正信息;
+    :重新发起比对;
+    note right: 回到流程开始
+    stop
+  else (否)
+    :设备退回供应商或转入异常处理流程;
+    stop
+  endif
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|财务人员|
+start
+:发起押金扣款申请;
+:输入扣款金额及原因;
+
+|#LightGray|系统|
+:查询医院信用等级;
+:根据信用等级确定扣款阈值;
+
+if (金额 <= 小额阈值?) then (是)
+  :系统自动触发扣款;
+  :生成扣款记录;
+  stop
+else (否)
+  if (金额 <= 中额阈值?) then (是)
+    |#LightYellow|业务经理|
+    :初审扣款合理性;
+    if (是否同意?) then (是)
+      :签署初审意见;
+      :系统触发扣款;
+      stop
+    else (否)
+      :驳回申请;
+      stop
+    endif
+  else (否)
+    |#LightYellow|业务经理|
+    :初审扣款合理性;
+    if (是否同意?) then (是)
+      :签署初审意见;
+      |#LightCoral|财务经理|
+      :复审扣款风险及合规性;
+      if (是否同意?) then (是)
+        :签署复审意见;
+        |#LightGreen|总经理|
+        :终审扣款;
+        if (是否同意?) then (是)
+          :系统触发扣款;
+          stop
+        else (否)
+          :驳回申请;
+          stop
+        endif
+      else (否)
+        :驳回申请;
+        stop
+      endif
+    else (否)
+      :驳回申请;
+      stop
+    endif
+  endif
+endif
+
+@enduml
+
+@startuml
+actor "库房人员" as KF
+actor "科室主任" as KS
+actor "库房主管" as KFZ
+actor "质控部门" as ZK
+actor "财务负责人" as CW
+actor "技术负责人" as JS
+participant "紧急出库Controller" as Controller
+participant "紧急出库Service" as Service
+participant "设备Repository" as DeviceRepo
+participant "订单Repository" as OrderRepo
+participant "任务Repository" as TaskRepo
+
+KF -> Controller: 发起紧急出库申请(设备ID, 原因)
+Controller -> Service: handleEmergencyOut(设备ID, 原因)
+Service -> DeviceRepo: findById(设备ID)
+DeviceRepo --> Service: 返回设备信息(校准过期)
+Service -> Service: 创建紧急出库单(状态:待审批)
+
+loop 三方会签
+  Service -> KS: 发送审批待办
+  KS --> Service: 审批通过
+  Service -> KFZ: 发送审批待办
+  KFZ --> Service: 审批通过
+  Service -> ZK: 发送审批待办
+  ZK --> Service: 审批通过
+end
+
+Service -> Service: 更新出库单状态为“待出库”
+Service -> DeviceRepo: updateStatus(设备ID, “紧急放行”)
+Service --> Controller: 返回审批通过结果
+Controller --> KF: 显示可出库
+
+KF -> Controller: 执行出库操作(出库单ID)
+Controller -> Service: executeOut(出库单ID)
+Service -> OrderRepo: save(出库单)
+Service -> TaskRepo: createTask(“待补校准报告”, 设备ID, 72小时)
+Service -> Service: 生成“事后补签”待办
+Service --> Controller: 返回出库成功
+Controller --> KF: 显示出库成功
+
+Service -> CW: 发送“事后补签”待办
+Service -> JS: 发送“事后补签”待办
+CW --> Service: 补签确认
+JS --> Service: 补签确认
+
+alt 72小时内补交报告
+  Service -> Service: 接收校准报告
+  Service -> TaskRepo: completeTask(“待补校准报告”)
+  Service -> DeviceRepo: updateStatus(设备ID, “待财务确认”)
+  Service -> CW: 发送“设备状态确认”待办
+  CW --> Service: 人工确认设备状态
+  Service -> DeviceRepo: updateStatus(设备ID, “可用”)
+else 超时未补交
+  Service -> Service: 标记出库单为“违规操作”
+  Service -> DeviceRepo: updateStatus(设备ID, “召回中”)
+  Service -> TaskRepo: createTask(“设备召回”, 设备ID)
+end
+
+
+@enduml
+
+@startuml
+' 实体定义
+entity "设备 (Device)" as device {
+  * device_id: int <<PK>>
+  --
+  brand_model: varchar
+  serial_number: varchar
+  registration_number: varchar
+  calibration_expiry_date: date
+  status: varchar [可用/出租/检测/维修/报废/紧急放行/召回中]
+  credit_level: varchar [A/B/C]
+}
+
+entity "采购订单 (PurchaseOrder)" as po {
+  * po_id: int <<PK>>
+  --
+  order_date: date
+  supplier: varchar
+  total_amount: decimal
+}
+
+entity "入库单 (InboundOrder)" as inbound {
+  * inbound_id: int <<PK>>
+  --
+  inbound_date: date
+  inspector: varchar
+  result: varchar [通过/异常]
+}
+
+entity "租赁合同 (LeaseContract)" as contract {
+  * contract_id: int <<PK>>
+  --
+  customer_name: varchar
+  start_date: date
+  end_date: date
+  billing_method: varchar [按时长/按量/混合/分成]
+  deposit_amount: decimal
+  status: varchar [草稿/审批中/已生效/已结束]
+}
+
+entity "出库单 (OutboundOrder)" as outbound {
+  * outbound_id: int <<PK>>
+  --
+  outbound_date: date
+  type: varchar [常规/紧急放行]
+  emergency_reason: text
+  is_violation: boolean
+  report_deadline: datetime
+}
+
+entity "费用结算单 (Settlement)" as settlement {
+  * settlement_id: int <<PK>>
+  --
+  period: date
+  total_fee: decimal
+  deposit_deduction: decimal
+  status: varchar [待对账/已对账/有差异]
+}
+
+entity "审批记录 (ApprovalRecord)" as approval {
+  * approval_id: int <<PK>>
+  --
+  approver_role: varchar
+  approval_action: varchar [同意/驳回/补签]
+  approval_date: datetime
+  comment: text
+}
+
+entity "任务 (Task)" as task {
+  * task_id: int <<PK>>
+  --
+  task_type: varchar [待补报告/设备召回/事后补签]
+  due_date: datetime
+  status: varchar [待处理/已完成/已逾期]
+}
+
+entity "检测报告 (InspectionReport)" as report {
+  * report_id: int <<PK>>
+  --
+  report_type: varchar [入库/归还/校准]
+  inspection_date: date
+  inspector: varchar
+  result: varchar [合格/不合格]
+  details: text
+}
+
+' 关系定义
+device }o--|| po : "来源于"
+device ||--o{ inbound : "记录于"
+device ||--o{ outbound : "出库"
+device ||--o{ report : "关联"
+device ||--o{ task : "关联"
+
+contract ||--o{ outbound : "包含"
+contract ||--o{ settlement : "生成"
+contract ||--o{ approval : "审批"
+
+outbound ||--o{ approval : "审批"
+outbound ||--o{ task : "生成"
+
+settlement ||--o{ approval : "审批"
+
+report ||--o{ device : "检测"
+
+
+@enduml

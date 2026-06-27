@@ -1,0 +1,344 @@
+@startuml
+|#LightBlue|招商业务员|
+start
+:录入归还设备检测数据;
+|#LightGreen|系统|
+:自动比对出厂基准参数;
+if (偏差是否超出预设阈值?) then (是)
+  :弹出红色警告，禁用“完成收回”按钮;
+  :生成待办事项，推送至财务与运营审核;
+  |#LightYellow|财务与运营|
+  :审核检测异常报告;
+  if (是否启动特殊审批?) then (是)
+    :执行特殊审批流程;
+    if (审批是否通过?) then (是)
+      |#LightBlue|招商业务员|
+      :强制完成收回流程;
+      |#LightGreen|系统|
+      :更新设备状态为“已收回-异常”;
+      :记录审批信息;
+      stop
+    else (否)
+      |#LightBlue|招商业务员|
+      :退回设备，要求维修或报废;
+      |#LightGreen|系统|
+      :更新设备状态为“待维修”或“待报废”;
+      stop
+    endif
+  else (否)
+    |#LightBlue|招商业务员|
+    :与客户协商赔偿或维修方案;
+    |#LightGreen|系统|
+    :更新设备状态为“待处理”;
+    stop
+  endif
+else (否)
+  |#LightGreen|系统|
+  if (检测数据是否完整?) then (是)
+    :允许“完成收回”;
+    :更新设备状态为“已收回-正常”;
+    stop
+  else (否)
+    :提示检测项缺失;
+    |#LightBlue|招商业务员|
+    :补充缺失检测项;
+    detach
+  endif
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|招商业务员|
+start
+:发起紧急出库申请;
+|#LightGreen|系统|
+:检查设备校准状态;
+if (设备校准是否过期?) then (是)
+  :生成紧急出库审批单;
+  |#LightCyan|科室主任|
+  :审批申请;
+  if (是否同意?) then (是)
+    |#LightYellow|库房主管|
+    :审批申请;
+    if (是否同意?) then (是)
+      |#LightPink|质控部门|
+      :审批申请;
+      if (是否同意?) then (是)
+        |#LightBlue|招商业务员|
+        :上传客户签字确认的风险自担文件;
+        |#LightGreen|系统|
+        if (文件是否合规?) then (是)
+          :允许设备出库;
+          :记录出库信息;
+          :启动24小时补交报告计时;
+          stop
+        else (否)
+          |#LightBlue|招商业务员|
+          :重新上传合规文件;
+          detach
+        endif
+      else (否)
+        |#LightGreen|系统|
+        :拒绝出库申请;
+        :通知申请方;
+        stop
+      endif
+    else (否)
+      |#LightGreen|系统|
+      :拒绝出库申请;
+      :通知申请方;
+      stop
+    endif
+  else (否)
+    |#LightGreen|系统|
+    :拒绝出库申请;
+    :通知申请方;
+    stop
+  endif
+else (否)
+  |#LightGreen|系统|
+  :提示设备校准未过期，走正常出库流程;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightGreen|系统|
+start
+:触发押金扣款事件;
+:获取扣款金额;
+if (扣款金额 <= 5000元?) then (是)
+  :自动触发扣款;
+  :生成电子凭证;
+  stop
+else (否)
+  if (扣款金额 <= 50000元?) then (是)
+    |#LightYellow|业务经理|
+    :初审扣款申请;
+    if (是否同意?) then (是)
+      |#LightPink|财务经理|
+      :复核扣款申请;
+      if (是否同意?) then (是)
+        |#LightGreen|系统|
+        :执行扣款;
+        :生成电子凭证;
+        stop
+      else (否)
+        :拒绝扣款;
+        stop
+      endif
+    else (否)
+      :拒绝扣款;
+      stop
+    endif
+  else (否)
+    |#LightCyan|业务总监|
+    :审批扣款申请;
+    if (是否同意?) then (是)
+      |#LightPink|财务总监|
+      :审批扣款申请;
+      if (是否同意?) then (是)
+        |#LightGray|总经理|
+        :审批扣款申请;
+        if (是否同意?) then (是)
+          |#LightGreen|系统|
+          :执行扣款;
+          :生成电子凭证;
+          stop
+        else (否)
+          :拒绝扣款;
+          stop
+        endif
+      else (否)
+        :拒绝扣款;
+        stop
+      endif
+    else (否)
+      :拒绝扣款;
+      stop
+    endif
+  endif
+endif
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+participant "紧急出库Controller" as Controller
+participant "紧急出库Service" as Service
+participant "设备Repository" as DeviceRepo
+participant "审批Repository" as ApprovalRepo
+participant "文件存储Service" as FileService
+
+Sales -> Controller: 发起紧急出库申请(设备ID, 客户信息)
+activate Controller
+
+Controller -> Service: createEmergencyOutOrder(设备ID, 客户信息)
+activate Service
+
+Service -> DeviceRepo: findDeviceById(设备ID)
+activate DeviceRepo
+DeviceRepo --> Service: 返回设备信息(含校准状态)
+deactivate DeviceRepo
+
+alt 设备校准过期
+    Service -> ApprovalRepo: createApprovalFlow(审批类型, 审批人列表)
+    activate ApprovalRepo
+    ApprovalRepo --> Service: 返回审批单ID
+    deactivate ApprovalRepo
+
+    loop 按顺序审批
+        Service -> ApprovalRepo: getNextApprover(审批单ID)
+        activate ApprovalRepo
+        ApprovalRepo --> Service: 返回当前审批人
+        deactivate ApprovalRepo
+
+        Service -> Controller: 请求审批(审批人)
+        Controller -> Sales: 显示审批界面
+        Sales -> Controller: 提交审批意见(同意)
+        Controller -> Service: submitApproval(审批单ID, 意见)
+        Service -> ApprovalRepo: updateApprovalStatus(审批单ID, 意见)
+        activate ApprovalRepo
+        ApprovalRepo --> Service: 更新成功
+        deactivate ApprovalRepo
+    end
+
+    Service -> Controller: 请求上传客户确认文件
+    Controller -> Sales: 显示文件上传界面
+    Sales -> Controller: 上传文件(文件流)
+    Controller -> FileService: uploadFile(文件流)
+    activate FileService
+    FileService --> Controller: 返回文件URL
+    deactivate FileService
+
+    Controller -> Service: attachFile(审批单ID, 文件URL)
+    Service -> ApprovalRepo: updateFile(审批单ID, 文件URL)
+    activate ApprovalRepo
+    ApprovalRepo --> Service: 更新成功
+    deactivate ApprovalRepo
+
+    Service -> DeviceRepo: updateDeviceStatus(设备ID, "已出库-紧急")
+    activate DeviceRepo
+    DeviceRepo --> Service: 更新成功
+    deactivate DeviceRepo
+
+    Service --> Controller: 出库成功
+    Controller --> Sales: 显示出库成功信息
+else 设备校准未过期
+    Service --> Controller: 提示走正常出库流程
+    Controller --> Sales: 显示提示信息
+end
+deactivate Service
+deactivate Controller
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+!define primary_key(x) <u>x</u>
+!define foreign_key(x) <i>x</i>
+!define not_null(x) <b>x</b>
+
+table(设备) {
+  + primary_key(设备ID) : UUID
+  + 设备名称 : String
+  + 设备型号 : String
+  + 出厂基准参数 : JSON
+  + 当前状态 : Enum (在库, 在途, 已出租, 待验收, 待维修, 待报废)
+  + 校准有效期 : Date
+}
+
+table(设备档案) {
+  + primary_key(档案ID) : UUID
+  + foreign_key(设备ID) : UUID
+  + 入库检测模板ID : UUID
+  + 归还检测模板ID : UUID
+  + 供应商信息 : String
+  + 采购日期 : Date
+}
+
+table(检测模板) {
+  + primary_key(模板ID) : UUID
+  + 模板名称 : String
+  + 检测项列表 : JSON
+  + 模板类型 : Enum (入库, 归还)
+}
+
+table(检测记录) {
+  + primary_key(记录ID) : UUID
+  + foreign_key(设备ID) : UUID
+  + foreign_key(模板ID) : UUID
+  + 检测人 : String
+  + 检测时间 : DateTime
+  + 检测数据 : JSON
+  + 检测结果 : Enum (正常, 异常)
+}
+
+table(租赁合同) {
+  + primary_key(合同ID) : UUID
+  + 客户名称 : String
+  + 计费方式 : Enum (按次, 按时长, 按使用量, 混合, 分成)
+  + 合同开始日期 : Date
+  + 合同结束日期 : Date
+  + 发票信息 : JSON
+}
+
+table(租赁订单) {
+  + primary_key(订单ID) : UUID
+  + foreign_key(合同ID) : UUID
+  + foreign_key(设备ID) : UUID
+  + 订单状态 : Enum (待出库, 已出库, 已归还, 已关闭)
+  + 出库时间 : DateTime
+  + 归还时间 : DateTime
+}
+
+table(审批流程) {
+  + primary_key(流程ID) : UUID
+  + 流程类型 : Enum (紧急出库, 押金扣款)
+  + 关联业务ID : UUID
+  + 当前审批节点 : Int
+  + 流程状态 : Enum (进行中, 已完成, 已拒绝)
+}
+
+table(审批记录) {
+  + primary_key(记录ID) : UUID
+  + foreign_key(流程ID) : UUID
+  + 审批人 : String
+  + 审批角色 : String
+  + 审批意见 : Enum (同意, 拒绝)
+  + 审批时间 : DateTime
+  + 备注 : String
+}
+
+table(押金扣款单) {
+  + primary_key(扣款单ID) : UUID
+  + foreign_key(合同ID) : UUID
+  + 扣款金额 : Decimal
+  + 扣款原因 : String
+  + 扣款状态 : Enum (待审批, 已执行, 已拒绝)
+}
+
+table(文件附件) {
+  + primary_key(文件ID) : UUID
+  + 关联业务ID : UUID
+  + 关联业务类型 : String
+  + 文件URL : String
+  + 上传时间 : DateTime
+}
+
+设备 ||--o{ 设备档案 : 拥有
+设备档案 }o--|| 检测模板 : 引用
+设备 ||--o{ 检测记录 : 产生
+检测模板 ||--o{ 检测记录 : 定义
+设备 ||--o{ 租赁订单 : 包含
+租赁合同 ||--o{ 租赁订单 : 关联
+租赁合同 ||--o{ 押金扣款单 : 关联
+审批流程 ||--o{ 审批记录 : 包含
+设备 ||--o{ 审批流程 : 触发
+租赁合同 ||--o{ 审批流程 : 触发
+押金扣款单 ||--o{ 审批流程 : 触发
+文件附件 ||--o{ 审批流程 : 关联
+
+@enduml

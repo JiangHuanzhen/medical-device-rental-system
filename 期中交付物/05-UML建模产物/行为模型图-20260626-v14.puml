@@ -1,0 +1,247 @@
+@startuml
+|业务代表|
+start
+:发起设备归还检测;
+:执行初检并录入检测数据;
+
+|系统|
+:自动比对检测数据与出厂基准值;
+if (偏差是否超过干预阈值?) then (是)
+  |系统|
+  :强制锁定设备，不允许入库;
+  :自动跳转至维修流程;
+  stop
+else (否)
+  if (偏差是否超过预警阈值?) then (是)
+    |系统|
+    :生成观察记录，允许入库;
+  endif
+endif
+
+|系统|
+:开启库房人员复核界面;
+
+|库房人员|
+:执行复核检测;
+if (复核结果与初检结果一致?) then (是)
+  |系统|
+  :记录最终检测结果;
+  :更新设备状态为“待入库”;
+  stop
+else (否)
+  |系统|
+  :标记为“复核异常”;
+  :通知业务代表和运维工程师;
+  stop
+endif
+
+
+@enduml
+
+@startuml
+|系统|
+start
+:每日检查所有设备校准状态;
+:识别校准即将到期设备;
+
+if (设备状态为“出库在途”或“待验收”?) then (是)
+  |系统|
+  :发送非强制性提醒通知;
+  stop
+else (否)
+  if (距离校准到期日 <= 7天?) then (是)
+    |系统|
+    :禁止设备出库;
+    :发送“禁止出库”通知;
+    if (距离校准到期日 <= 3天?) then (是)
+      |系统|
+      :强制锁库，冻结设备库存;
+      :发送“锁库”通知;
+      :触发紧急出库审批流程;
+      if (是否发起紧急出库审批?) then (是)
+        |业务代表/运维工程师|
+        :发起紧急出库审批;
+        |系统|
+        :检查是否满足紧急条件(如医疗场景);
+        if (条件满足?) then (是)
+          |系统|
+          :发起双重审批;
+          if (审批通过?) then (是)
+            |系统|
+            :允许紧急出库;
+            :记录审批及承诺信息;
+            stop
+          else (否)
+            |系统|
+            :拒绝出库请求;
+            stop
+          endif
+        else (否)
+          |系统|
+          :拒绝出库请求;
+          stop
+        endif
+      else (否)
+        stop
+      endif
+    else (否)
+      stop
+    endif
+  else (否)
+    if (距离校准到期日 <= 30天?) then (是)
+      |系统|
+      :发送到期前30天提醒;
+      stop
+    else (否)
+      stop
+    endif
+  endif
+endif
+
+
+@enduml
+
+@startuml
+|系统|
+start
+:设备出库;
+if (设备是否已送达客户并完成验收?) then (是)
+  |系统|
+  :更新设备状态为“已出租”;
+  :启动校准预警计时;
+  stop
+else (否)
+  if (设备是否在运输途中?) then (是)
+    |系统|
+    :更新设备状态为“出库在途”;
+    :启动非强制性校准预警;
+    stop
+  else (否)
+    |系统|
+    :更新设备状态为“待验收”;
+    :启动非强制性校准预警;
+    stop
+  endif
+endif
+
+
+@enduml
+
+@startuml
+actor "业务代表" as Sales
+actor "库房人员" as Warehouse
+participant "检测Controller" as Controller
+participant "检测Service" as Service
+participant "设备Repository" as DeviceRepo
+participant "检测记录Repository" as RecordRepo
+
+Sales -> Controller: 发起归还检测(设备ID)
+Controller -> Service: startReturnInspection(deviceId)
+Service -> DeviceRepo: findById(deviceId)
+DeviceRepo --> Service: device
+Service -> Service: 比对检测数据与出厂基准值
+
+alt 偏差超过干预阈值
+    Service -> Controller: returnInspectionFailed(严重偏差，强制锁定)
+    Controller -> Sales: 显示“检测失败，设备已锁定，跳转维修”
+else 偏差超过预警阈值
+    Service -> Controller: returnInspectionWarning(生成观察记录)
+    Controller -> Sales: 显示“检测通过，有预警，允许入库”
+else 正常
+    Service -> Controller: returnInspectionPassed(初检完成)
+    Controller -> Sales: 显示“初检完成，等待复核”
+end
+
+Warehouse -> Controller: 执行复核检测(检测ID, 复核数据)
+Controller -> Service: reviewInspection(inspectionId, reviewData)
+Service -> RecordRepo: findById(inspectionId)
+RecordRepo --> Service: inspectionRecord
+Service -> Service: 比对初检与复核数据
+
+alt 复核结果一致
+    Service -> RecordRepo: save(最终结果)
+    Service -> DeviceRepo: updateStatus(deviceId, "待入库")
+    Service -> Controller: reviewPassed()
+    Controller -> Warehouse: 显示“复核通过，设备待入库”
+else 复核结果不一致
+    Service -> RecordRepo: save(复核异常)
+    Service -> Controller: reviewFailed(异常通知)
+    Controller -> Warehouse: 显示“复核异常，已通知相关人员”
+end
+
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID: UUID [PK]
+  + 设备名称: String
+  + 出厂基准值: JSON
+  + 当前状态: String
+  + 校准到期日: Date
+  + 创建时间: DateTime
+}
+
+table(设备状态) {
+  + 状态ID: UUID [PK]
+  + 状态名称: String
+  + 描述: String
+}
+
+table(校准记录) {
+  + 校准记录ID: UUID [PK]
+  + 设备ID: UUID [FK]
+  + 校准日期: Date
+  + 校准结果: String
+  + 下次校准日期: Date
+}
+
+table(检测模板) {
+  + 模板ID: UUID [PK]
+  + 模板名称: String
+  + 模板类型: String (出库/归还)
+  + 检测项目列表: JSON
+  + 预警阈值: JSON
+  + 干预阈值: JSON
+}
+
+table(检测记录) {
+  + 检测记录ID: UUID [PK]
+  + 设备ID: UUID [FK]
+  + 模板ID: UUID [FK]
+  + 检测类型: String (初检/复核)
+  + 检测人ID: UUID [FK]
+  + 检测数据: JSON
+  + 检测结果: String
+  + 创建时间: DateTime
+}
+
+table(用户) {
+  + 用户ID: UUID [PK]
+  + 用户名: String
+  + 角色: String (业务代表/库房人员/运维工程师/财务)
+}
+
+table(审批记录) {
+  + 审批记录ID: UUID [PK]
+  + 关联设备ID: UUID [FK]
+  + 审批类型: String (紧急出库)
+  + 发起人ID: UUID [FK]
+  + 审批人ID: UUID [FK]
+  + 审批状态: String
+  + 审批意见: String
+  + 创建时间: DateTime
+}
+
+设备 ||--o{ 校准记录 : "有"
+设备 }o--|| 设备状态 : "属于"
+设备 ||--o{ 检测记录 : "参与"
+检测模板 ||--o{ 检测记录 : "依据"
+用户 ||--o{ 检测记录 : "执行"
+用户 ||--o{ 审批记录 : "发起/审批"
+设备 ||--o{ 审批记录 : "关联"
+
+
+@enduml

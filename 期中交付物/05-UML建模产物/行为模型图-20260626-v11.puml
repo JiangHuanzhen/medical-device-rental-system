@@ -1,0 +1,266 @@
+@startuml
+|#LightBlue|库房人员|
+start
+:接收设备入库;
+:录入/更新设备校准有效期;
+
+|#LightGreen|系统|
+:每日定时任务扫描所有设备校准有效期;
+:计算距离校准到期日的天数 (DaysToExpiry);
+
+if (DaysToExpiry <= 0?) then (是)
+  :标记设备状态为[已过期];
+  |#LightBlue|库房人员|
+  :查看设备状态为[已过期];
+  :确认设备已从库位移除;
+  stop
+else (否)
+  if (DaysToExpiry <= 3?) then (是)
+    |#LightGreen|系统|
+    :自动锁定设备库位;
+    :触发[锁库]通知;
+    |#LightBlue|库房人员|
+    :收到[锁库]通知;
+    :无法进行出库操作;
+    |#LightYellow|招商业务员|
+    :收到[锁库]通知;
+    if (有紧急出库需求?) then (是)
+      :发起紧急审批流程;
+      |#LightGreen|系统|
+      if (审批通过?) then (是)
+        :临时解锁设备;
+        :记录审批操作日志;
+        |#LightBlue|库房人员|
+        :执行紧急出库;
+        stop
+      else (否)
+        |#LightYellow|招商业务员|
+        :收到审批驳回通知;
+        stop
+      endif
+    else (否)
+      stop
+    endif
+  else (否)
+    if (DaysToExpiry <= 7?) then (是)
+      |#LightGreen|系统|
+      :触发[7天禁止出库]规则;
+      :在设备列表标记[即将到期];
+      |#LightBlue|库房人员|
+      :看到设备标记为[即将到期];
+      :无法执行出库操作;
+      :协调安排校准;
+      stop
+    else (否)
+      if (DaysToExpiry <= 15?) then (是)
+        |#LightGreen|系统|
+        :触发[15天预警]提醒;
+        stop
+      else (否)
+        if (DaysToExpiry <= 30?) then (是)
+          |#LightGreen|系统|
+          :触发[30天预警]提醒;
+          stop
+        else (否)
+          stop
+        endif
+      endif
+    endif
+  endif
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|库房人员|
+start
+:选择在库设备;
+:执行出库操作;
+
+|#LightGreen|系统|
+if (设备距离校准到期日 <= 7天?) then (是)
+  :拒绝出库操作;
+  :提示[设备即将到期，禁止出库];
+  |#LightBlue|库房人员|
+  :收到出库失败提示;
+  stop
+else (否)
+  :允许出库;
+  :更新设备状态为[出库在途];
+  :触发[非强制性提醒] (黄色标识);
+  |#LightBlue|库房人员|
+  :确认设备已发出;
+  |#LightGreen|系统|
+  :持续监控设备状态;
+  if (客户完成安装验收?) then (是)
+    :更新设备状态为[已出租];
+    :关闭[非强制性提醒];
+    :启动[强制管控]规则;
+    if (设备距离校准到期日 <= 3天?) then (是)
+      :触发[锁库]通知给运维;
+      |#LightGreen|运维工程师|
+      :收到[锁库]通知;
+      :安排上门校准或回收设备;
+      stop
+    else (否)
+      stop
+    endif
+  else (否)
+    :设备状态保持[出库在途]或[待验收];
+    if (设备距离校准到期日 <= 0?) then (是)
+      |#LightGreen|系统|
+      :触发[非强制性提醒]升级 (红色标识);
+      |#LightBlue|库房人员|
+      :收到设备在途过期的预警;
+      :联系客户或物流;
+      stop
+    else (否)
+      stop
+    endif
+  endif
+endif
+
+@enduml
+
+@startuml
+|#LightGreen|运维工程师|
+start
+:登录系统;
+:进入[预警配置]页面;
+:设置推送规则 (时间、频率、接收人);
+:保存配置;
+
+|#LightGreen|系统|
+:接收并存储配置;
+:启动定时任务;
+
+fork
+  :每日任务: 检查是否有设备进入[30天/15天/7天]预警窗口;
+  if (有设备进入窗口?) then (是)
+    :在当天上午10:00发送单次提醒;
+  else (否)
+  endif
+fork again
+  :每周任务: 每周一上午9:30;
+  :查询所有[临期设备清单] (到期日<=30天);
+  if (清单不为空?) then (是)
+    :生成报告;
+    :推送给库房人员和运维经理;
+    |#LightBlue|库房人员|
+    :收到推送的临期清单;
+    :查看清单并安排本周校准工作;
+    stop
+  else (否)
+    :不推送空报告;
+    stop
+  endif
+end fork
+
+@enduml
+
+@startuml
+actor "库房人员" as User
+participant "出库界面" as UI
+participant "出库控制器" as Controller
+participant "设备服务" as Service
+participant "设备仓储" as Repository
+participant "预警服务" as AlertService
+
+User -> UI: 扫描/选择设备SN，点击出库
+UI -> Controller: requestCheckout(deviceSN, orderId)
+Controller -> Service: checkoutDevice(deviceSN, orderId)
+Service -> Repository: findDeviceBySN(deviceSN)
+Repository --> Service: return Device(calibrationExpiryDate, status)
+Service -> Service: calculateDaysToExpiry(calibrationExpiryDate)
+
+alt 设备状态为[在库]
+    alt 距离到期日 > 7天
+        Service -> Repository: updateDeviceStatus(deviceSN, "出库在途")
+        Repository --> Service: return success
+        Service -> AlertService: triggerNonBlockingAlert(deviceSN, "在途")
+        Service --> Controller: return CheckoutResult(success, "出库成功")
+        Controller --> UI: displaySuccess("设备已出库")
+        UI -> User: 显示成功信息，设备状态更新
+    else 距离到期日 <= 7天 且 > 3天
+        Service --> Controller: return CheckoutResult(failure, "设备距离校准到期日不足7天，禁止出库")
+        Controller --> UI: displayError("设备即将到期，禁止出库")
+        UI -> User: 显示错误提示
+    else 距离到期日 <= 3天
+        Service --> Controller: return CheckoutResult(failure, "设备已锁库，禁止出库")
+        Controller --> UI: displayError("设备已锁库，请联系管理员")
+        UI -> User: 显示错误提示
+    end
+else 设备状态为[已过期]
+    Service --> Controller: return CheckoutResult(failure, "设备校准已过期，禁止出库")
+    Controller --> UI: displayError("设备已过期，无法出库")
+    UI -> User: 显示错误提示
+end
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+!define primary_key(x) <u>x</u>
+!define foreign_key(x) <i>x</i>
+
+table(设备) {
+  + <u>设备ID (PK)</u> : UUID
+  设备名称 : String
+  设备型号 : String
+  序列号 (SN) : String [unique]
+  校准有效期 : Date
+  当前状态 : Enum [在库, 出库在途, 待验收, 已出租, 报废, 丢失]
+  库位ID (FK) : UUID
+}
+
+table(库位) {
+  + <u>库位ID (PK)</u> : UUID
+  库位编码 : String [unique]
+  是否锁定 : Boolean
+  锁定原因 : String
+  锁定时间 : DateTime
+}
+
+table(设备状态日志) {
+  + <u>日志ID (PK)</u> : UUID
+  设备ID (FK) : UUID
+  变更前状态 : Enum
+  变更后状态 : Enum
+  操作人 : String
+  操作时间 : DateTime
+  备注 : String
+}
+
+table(预警记录) {
+  + <u>记录ID (PK)</u> : UUID
+  设备ID (FK) : UUID
+  预警类型 : Enum [30天, 15天, 7天, 锁库, 过期]
+  触发时间 : DateTime
+  是否已处理 : Boolean
+  处理人 : String
+  处理时间 : DateTime
+}
+
+table(紧急审批单) {
+  + <u>审批单ID (PK)</u> : UUID
+  设备ID (FK) : UUID
+  申请人 : String
+  申请原因 : String
+  审批状态 : Enum [待审批, 通过, 驳回]
+  审批人 : String
+  审批时间 : DateTime
+}
+
+table(预警配置) {
+  + <u>配置ID (PK)</u> : UUID
+  配置项 : String [unique]
+  配置值 : String
+}
+
+设备 ||--o{ 设备状态日志 : 产生
+设备 }o--|| 库位 : 存放于
+设备 ||--o{ 预警记录 : 触发
+设备 ||--o{ 紧急审批单 : 关联
+
+
+@enduml

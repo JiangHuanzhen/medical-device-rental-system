@@ -1,0 +1,256 @@
+@startuml
+|#LightBlue|库房人员|
+start
+:接收校准到期预警;
+:查看临期设备清单;
+if (设备状态为“在库”?) then (是)
+  :标记设备为“即将到期”;
+else (否)
+  if (设备状态为“在途”或“待验收”?) then (是)
+    :记录预警信息，等待设备入库;
+    stop
+  else (设备已出租)
+    :向客户发送校准提醒;
+    stop
+  endif
+endif
+
+|#LightGreen|系统|
+:检查设备校准到期日;
+if (距离到期日 <= 7天?) then (是)
+  :设置设备状态为“禁止出库”;
+  if (距离到期日 <= 3天?) then (是)
+    :设置设备状态为“已锁库”;
+    :触发紧急出库审批流程;
+  else (否)
+    :继续每日提醒;
+    stop
+  endif
+else (否)
+  :继续每日提醒;
+  stop
+endif
+
+|#LightYellow|招商业务员|
+:发起紧急出库申请;
+:填写紧急出库理由;
+
+|#LightBlue|库房主管|
+:审核设备状态与库存;
+if (审核通过?) then (是)
+  |#LightYellow|招商业务员|
+  :提交至质控部门;
+else (否)
+  :拒绝申请，流程终止;
+  stop
+endif
+
+|#LightGreen|质控部门|
+:进行安全与合规核查;
+if (核查通过?) then (是)
+  |#LightYellow|招商业务员|
+  :提交至科室主任;
+else (否)
+  :拒绝申请，流程终止;
+  stop
+endif
+
+|#LightCyan|科室主任|
+:最终确认业务需求;
+if (确认通过?) then (是)
+  :批准紧急出库;
+  |#LightGreen|系统|
+  :解锁设备，允许出库;
+  :记录审批日志;
+  stop
+else (否)
+  :拒绝申请，流程终止;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightYellow|招商业务员|
+start
+:在系统中点击“开始检测”;
+:触发归还流程节点;
+
+|#LightBlue|库房人员|
+:接收归还检测任务;
+:使用标准化检测清单进行物理检测;
+:录入检测数据;
+
+|#LightGreen|系统|
+:获取该设备的出厂基准数据;
+:计算检测数据与基准数据的偏差;
+if (偏差超出预设阈值?) then (是)
+  :弹出警告窗口，显示偏差项目与数值;
+  :阻止“完成收回”操作;
+  |#LightBlue|库房人员|
+  if (设备问题可修复?) then (是)
+    :将设备状态强制转为“待维修”;
+  else (否)
+    :将设备状态强制转为“待校准”;
+  endif
+  :记录异常日志;
+  stop
+else (否)
+  :允许“完成收回”操作;
+  :更新设备状态为“在库”;
+  stop
+endif
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+participant "归还控制器" as Controller
+participant "设备服务" as Service
+participant "设备仓储" as Repository
+
+Sales -> Controller: 发起归还检测请求(设备ID, 检测数据)
+activate Controller
+
+Controller -> Service: 处理归还检测(设备ID, 检测数据)
+activate Service
+
+Service -> Repository: 获取设备出厂基准数据(设备ID)
+activate Repository
+Repository --> Service: 返回基准数据
+deactivate Repository
+
+Service -> Service: 计算偏差值
+alt 偏差在阈值内 (正常路径)
+    Service -> Repository: 更新设备状态为“在库”
+    activate Repository
+    Repository --> Service: 更新成功
+    deactivate Repository
+    Service --> Controller: 返回“检测通过”
+    Controller --> Sales: 显示“完成收回”按钮
+else 偏差超出阈值 (异常路径)
+    Service --> Controller: 返回“检测异常”及详细信息
+    Controller --> Sales: 弹出警告窗口，阻止收回
+    opt 库房人员处理 (可选路径)
+        Sales -> Controller: 提交设备状态变更(待维修/待校准)
+        Controller -> Service: 处理状态变更(设备ID, 新状态)
+        Service -> Repository: 更新设备状态
+        activate Repository
+        Repository --> Service: 更新成功
+        deactivate Repository
+        Service --> Controller: 返回“状态已更新”
+        Controller --> Sales: 显示更新结果
+    end
+end
+deactivate Service
+deactivate Controller
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID (PK)
+  --
+  设备名称
+  型号
+  出厂基准数据 (JSON)
+  当前状态 (在库/在途/待验收/已出租/待维修/待校准/已锁库)
+  校准到期日
+  入库时间
+}
+
+table(设备状态变更记录) {
+  + 记录ID (PK)
+  --
+  设备ID (FK)
+  变更前状态
+  变更后状态
+  变更人
+  变更时间
+  变更原因
+}
+
+table(检测清单模板) {
+  + 模板ID (PK)
+  --
+  模板名称
+  版本号
+  创建时间
+}
+
+table(检测项) {
+  + 检测项ID (PK)
+  --
+  模板ID (FK)
+  检测项名称
+  数据类型 (数值/布尔/文本)
+  预设阈值 (JSON)
+}
+
+table(检测记录) {
+  + 检测记录ID (PK)
+  --
+  设备ID (FK)
+  模板ID (FK)
+  检测人
+  检测时间
+  检测类型 (出库/归还)
+}
+
+table(检测结果) {
+  + 结果ID (PK)
+  --
+  检测记录ID (FK)
+  检测项ID (FK)
+  录入值
+  偏差值
+  是否异常
+}
+
+table(紧急出库审批单) {
+  + 审批单ID (PK)
+  --
+  设备ID (FK)
+  申请发起人
+  申请时间
+  紧急理由
+  审批状态 (待审批/已批准/已拒绝)
+  当前审批节点
+}
+
+table(审批记录) {
+  + 记录ID (PK)
+  --
+  审批单ID (FK)
+  审批人角色 (库房主管/质控/科室主任)
+  审批人
+  审批时间
+  审批意见
+  审批结果 (通过/拒绝)
+}
+
+table(校准预警记录) {
+  + 预警记录ID (PK)
+  --
+  设备ID (FK)
+  预警时间
+  预警类型 (30天/15天/7天/每日)
+  是否已处理
+}
+
+设备 ||--o{ 设备状态变更记录 : "记录变更"
+设备 ||--o{ 检测记录 : "参与检测"
+设备 ||--o{ 紧急出库审批单 : "发起审批"
+设备 ||--o{ 校准预警记录 : "产生预警"
+
+检测清单模板 ||--o{ 检测项 : "包含"
+检测清单模板 ||--o{ 检测记录 : "使用"
+
+检测记录 ||--o{ 检测结果 : "包含"
+检测项 ||--o{ 检测结果 : "记录"
+
+紧急出库审批单 ||--o{ 审批记录 : "包含"
+
+@enduml

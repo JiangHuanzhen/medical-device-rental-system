@@ -1,0 +1,260 @@
+@startuml
+|#LightBlue|招商业务员|
+start
+:发起紧急出库申请;
+note right
+  选择校准过期设备
+end note
+|#LightGray|系统|
+:检查设备状态;
+if (设备状态为“已出租”? ) then (是)
+  :生成“待补校准”标记;
+else (否)
+  :保持设备状态;
+endif
+:启动四级签批流程;
+|#LightYellow|库房主管|
+:核实库存与必要性;
+if (库存充足且确属紧急?) then (是)
+  :审批通过;
+else (否)
+  :驳回申请;
+  stop
+endif
+|#LightGreen|质控部门|
+:进行安全与功能核查;
+if (设备性能达标?) then (是)
+  :审批通过;
+else (否)
+  :驳回申请;
+  stop
+endif
+|#LightPink|科室主任|
+:确认接收并承担使用责任;
+if (确认接收?) then (是)
+  :审批通过;
+else (否)
+  :驳回申请;
+  stop
+endif
+|#LightGray|系统|
+:生成紧急出库单;
+:开启24小时补交报告计时;
+|#LightBlue|招商业务员|
+:执行出库操作;
+:在24小时内补交校准报告;
+if (报告按时提交?) then (是)
+  :系统自动比对报告;
+  if (报告合规?) then (是)
+    :解除“待补校准”标记;
+    :流程正常结束;
+    stop
+  else (否)
+    :触发升级督办;
+    :通知部门负责人;
+    stop
+  endif
+else (否)
+  :触发升级督办;
+  :通知部门负责人;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightBlue|招商业务员|
+start
+:使用标准模板进行初检;
+:记录所有检测项结果;
+|#LightGray|系统|
+:自动比对检测数据与出库基准值;
+if (数据偏差在允许范围内?) then (是)
+  :标记设备状态为“待复核”;
+else (否)
+  :阻断“完成收回”按钮;
+  :弹出提示“检测流程已终结”;
+  :自动跳转至维修工单创建页面;
+  :设备状态标记为“待维修”;
+  stop
+endif
+|#LightYellow|库房人员|
+:对所有检测项进行全面复核;
+if (复核结果与初检一致?) then (是)
+  :确认设备状态;
+else (否)
+  :修正检测结果;
+  :记录差异原因;
+  :确认设备状态;
+endif
+if (设备状态为“正常”?) then (是)
+  :执行入库操作;
+  stop
+else (否)
+  :触发异常处理流程;
+  :创建维修工单;
+  stop
+endif
+
+@enduml
+
+@startuml
+|#LightGray|系统|
+start
+:每周一早上10点扫描所有设备校准有效期;
+:生成临期清单并推送;
+fork
+  :推送临期清单给相关角色;
+fork again
+  :检查设备到期时间;
+  if (到期前30天?) then (是)
+    :发送单独提醒;
+  else (否)
+    if (到期前15天?) then (是)
+      :发送单独提醒;
+    else (否)
+      if (到期前7天?) then (是)
+        :发送单独提醒;
+        :触发“7天禁止出库”管控;
+        |#LightBlue|招商业务员|
+        :收到预警，协调客户更换或安排校准;
+        if (设备已出库?) then (是)
+          :协调客户更换设备;
+        else (否)
+          :安排设备校准;
+        endif
+      else (否)
+        if (到期前3天?) then (是)
+          :触发“3天锁库”管控;
+          :设备库存被冻结;
+          |#LightBlue|招商业务员|
+          :启动“到期收回+验收”流程;
+          :协商续租或提前退租;
+        endif
+      endif
+    endif
+  endif
+end fork
+stop
+
+@enduml
+
+@startuml
+actor "招商业务员" as Sales
+participant "Controller: 归还检测" as Controller
+participant "Service: 检测服务" as Service
+participant "Repository: 设备基准值" as Repo_Baseline
+participant "Repository: 检测记录" as Repo_Record
+participant "库房人员" as Warehouse
+
+Sales -> Controller: 提交归还检测结果
+Controller -> Service: 请求比对检测数据
+Service -> Repo_Baseline: 获取设备出库基准值
+Repo_Baseline --> Service: 返回基准值
+Service -> Service: 逐项比对检测数据与基准值
+
+alt 数据偏差在允许范围内
+    Service -> Repo_Record: 保存检测记录，状态为“待复核”
+    Repo_Record --> Service: 返回保存成功
+    Service --> Controller: 返回比对通过
+    Controller --> Sales: 显示“待复核”状态
+    Sales -> Warehouse: 通知进行复核
+    Warehouse -> Controller: 提交复核结果
+    Controller -> Service: 请求更新检测状态
+    Service -> Repo_Record: 更新检测记录，状态为“已复核”
+    Repo_Record --> Service: 返回更新成功
+    Service --> Controller: 返回复核成功
+    Controller --> Warehouse: 显示复核成功，可入库
+
+else 数据偏差超出允许范围
+    Service --> Controller: 返回比对失败，并附偏差详情
+    Controller --> Sales: 阻断“完成收回”按钮，弹出“检测流程已终结”提示
+    Controller -> Sales: 自动跳转至维修工单创建页面
+    Sales -> Controller: 提交维修工单
+    Controller -> Service: 请求创建维修工单
+    Service -> Repo_Record: 创建设备维修记录
+    Repo_Record --> Service: 返回创建成功
+    Service --> Controller: 返回工单创建成功
+    Controller --> Sales: 显示维修工单已创建，设备状态为“待维修”
+end
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID (PK)
+  - 设备名称
+  - 设备型号
+  - 出厂编号
+  - 当前状态 (在库/已出租/待维修/待校准)
+  - 校准有效期
+  - 出库基准值 (JSON)
+}
+
+table(检测模板) {
+  + 模板ID (PK)
+  - 模板名称
+  - 检测项列表 (JSON)
+  - 是否为标准模板
+}
+
+table(检测记录) {
+  + 记录ID (PK)
+  - 设备ID (FK)
+  - 模板ID (FK)
+  - 检测类型 (出库/归还)
+  - 检测结果 (JSON)
+  - 检测人ID (FK)
+  - 复核人ID (FK)
+  - 检测时间
+  - 复核时间
+  - 状态 (初检/待复核/已复核/已终结)
+}
+
+table(审批流程) {
+  + 流程ID (PK)
+  - 流程类型 (紧急出库/维修)
+  - 当前节点
+  - 发起人ID (FK)
+  - 状态 (进行中/已通过/已驳回)
+}
+
+table(审批节点) {
+  + 节点ID (PK)
+  - 流程ID (FK)
+  - 审批人角色 (库房主管/质控/科室主任)
+  - 审批人ID (FK)
+  - 审批意见
+  - 审批时间
+  - 节点顺序
+}
+
+table(维修工单) {
+  + 工单ID (PK)
+  - 设备ID (FK)
+  - 来源 (归还检测/故障报修)
+  - 问题描述
+  - 维修人ID (FK)
+  - 维修结果
+  - 配件更换记录 (JSON)
+  - 状态 (待处理/处理中/已完成)
+}
+
+table(校准预警) {
+  + 预警ID (PK)
+  - 设备ID (FK)
+  - 预警类型 (临期/到期前30天/15天/7天/3天)
+  - 预警时间
+  - 是否已推送
+  - 接收人ID (FK)
+}
+
+设备 ||--o{ 检测记录 : "产生"
+检测模板 ||--o{ 检测记录 : "使用"
+设备 ||--o{ 维修工单 : "关联"
+设备 ||--o{ 校准预警 : "触发"
+审批流程 ||--o{ 审批节点 : "包含"
+
+@enduml

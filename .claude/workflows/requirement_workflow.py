@@ -1116,6 +1116,11 @@ flowchart TD
 -- 务必在此处输出完整的 plantUML 用例图代码 --
 
 ## 3.2 外部接口需求（IFR）
+> 编号规则：IFR-接口类型-流水号（如 IFR-API-001、IFR-SMTP-001、IFR-FILE-001、IFR-INT-001）
+### 3.2.1 内部接口（模块间调用）
+列出系统内部模块之间的API调用或消息通信接口（至少3个）。
+### 3.2.2 外部系统接口
+列出与外部系统的接口（至少3个），每条接口含：接口编号、描述、输入/输出、协议、性能要求、安全策略、异常处理。
 
 !!! 必须在此处输出 E-R 图，不允许跳过 !!!
 ### E-R图（Mermaid erDiagram，核心实体：设备、客户、合同、订单、费用）
@@ -1244,22 +1249,32 @@ flowchart LR
     for _pat in [r"20\d{2}[-/年]\d{1,2}[-/月]\d{1,2}[日]?", r"\d{4}年\d{1,2}月\d{1,2}日"]:
         result = _re.sub(_pat, _today_str, result)
 
-    # 3. 编号体系：需求清单中 REQ 对应 SRS 中 FR，不再做 REQ→FR 强制替换（保留引用链）
+    # 3. 编号体系：修正 NFR 和 IFR 编号
     for _nf_old, _nf_new in [("PERF-", "NFR-PERF-"), ("SEC-", "NFR-SEC-"), ("REL-", "NFR-REL-"),
                              ("MAINT-", "NFR-MAINT-"), ("PER-", "NFR-PERF-")]:
         result = _re.sub(_nf_old + r'(\d+)', _nf_new + r'\1', result)
+    # 3b. 修正 NFR 重复前缀：NFR-NFR-* → NFR-*
+    for _dup in ["NFR-NFR-PERF-", "NFR-NFR-SEC-", "NFR-NFR-REL-", "NFR-NFR-MAINT-",
+                 "NFR-NFR-EXT-", "NFR-NFR-USA-"]:
+        result = result.replace(_dup, _dup.replace("NFR-NFR-", "NFR-"))
+    # 3c. 修正 IFR 编号格式：IFR-001/002/003 → IFR-API-001/IFR-SMTP-001/IFR-FILE-001
+    result = _re.sub(r'IFR-001([^-\d])', r'IFR-API-001\1', result)
+    result = _re.sub(r'IFR-002([^-\d])', r'IFR-SMTP-001\1', result)
+    result = _re.sub(r'IFR-003([^-\d])', r'IFR-FILE-001\1', result)
 
-    # 4. 确保修订历史记录表存在（规范 §文档头部要求）
+    # 4. 确保修订历史记录表存在且格式正确（6列：版本号/修订日期/修订人/修订类型/修订内容简述/审批人）
+    _REV_FULL = f"## 修订历史记录\n| 版本号 | 修订日期 | 修订人 | 修订类型 | 修订内容简述 | 审批人 |\n| ---- | ---- | ---- | ---- | ---- | ---- |\n| V1.0.0 | {_today_str} | 俞儿游 | 新建 | 文档初稿，确立初始需求基线 | 俞儿游 |"
+    # 修复缺少「修订人」和「审批人」列的历史记录表（4列→6列）
+    _rev_4col = _re.compile(r'\| 版本号 \| 修订日期 \| 修订类型 \| 修订内容简述 \|\n\| ---- \| ---- \| ---- \| ---- \|\n(\| [^\n]*\n)')
+    result = _re.sub(_rev_4col, _REV_FULL, result)
     if "## 修订历史记录" not in result:
-        revision_table = f"\n## 修订历史记录\n| 版本号 | 修订日期 | 修订人 | 修订类型 | 修订内容简述 | 审批人 |\n|-------|---------|-------|---------|------------|-------|\n| V1.0.0 | {_today_str} | AI基线智能体 | 新建 | 文档初稿，确立初始需求基线 | |\n"
-        # 插入到文档头部信息之后
         _insert_pos = result.find("# 1")
         if _insert_pos < 0:
             _insert_pos = result.find("1 引言")
         if _insert_pos >= 0:
-            result = result[:_insert_pos] + revision_table + "\n" + result[_insert_pos:]
+            result = result[:_insert_pos] + _REV_FULL + "\n\n" + result[_insert_pos:]
         else:
-            result = revision_table + "\n" + result
+            result = _REV_FULL + "\n\n" + result
 
     # 5. 确保文档头部（修订历史已存在）后再校验架构图和E-R图
     # 检查是否有架构图 Mermaid 代码（flowchart TD 或 graph TD）
@@ -1381,6 +1396,37 @@ erDiagram
         result += "4. 医疗器械租赁管理系统涉众需求调研记录\n"
         result += "5. 医疗器械租赁管理系统UML建模产物\n"
         result += "6. 医疗器械租赁管理系统结构化需求清单\n"
+
+    # 9. 强制修正文档头部编制人/审核人/批准人
+    result = result.replace("| 编制人 | AI基线智能体（A6） |", "| 编制人 | 俞儿游 |")
+    result = result.replace("| 审核人 | CCB变更控制委员会 |", "| 审核人 | 俞儿游 |")
+    result = result.replace("| 批准人 | CCB变更控制委员会 |", "| 批准人 | 俞儿游 |")
+
+    # 10. 确保 IFR 子节结构存在
+    if "### 3.2.1" not in result and "## 3.2 外部接口需求" in result:
+        ifr_default = """### 3.2.1 内部接口（模块间调用）
+系统内部各微服务模块之间通过RESTful API进行同步通信，通过消息队列进行异步通信。
+
+| 接口编号 | 接口名称 | 提供方 | 消费方 | 协议 |
+| ---- | ---- | ---- | ---- | ---- |
+| IFR-INT-001 | 用户认证Token校验 | 用户认证服务 | 全部业务服务 | HTTPS/REST |
+| IFR-INT-002 | 设备状态查询 | 设备管理服务 | 租赁订单服务 | HTTPS/REST |
+| IFR-INT-003 | 费用结算通知 | 费用结算服务 | 数据统计服务 | 消息队列 |
+
+### 3.2.2 外部系统接口
+"""
+        result = result.replace("## 3.2 外部接口需求（IFR）\n", "## 3.2 外部接口需求（IFR）\n\n" + ifr_default)
+
+    # 11. 强制替换模糊词
+    for _fuzzy, _exact in [
+        ("无法被及时发现", "无法在验收窗口期内被有效识别"),
+        ("快速集成。", "低耦合集成，新增模块不应影响现有功能运行。"),
+        ("无法及时将设备标记为可用", "无法在验收完成后自动触发设备状态变更"),
+        ("快速失败，", "在500ms内触发熔断并返回失败响应，"),
+        ("快速恢复服务", "在30分钟内恢复全部服务"),
+        ("短信发送的及时性", "短信发送的时效性（单条短信端到端送达时间不超过30秒）"),
+    ]:
+        result = result.replace(_fuzzy, _exact)
 
     # 版本号递增
     doc_ver = state.get("doc_versions", {}).get("srs", 1)
@@ -1713,13 +1759,49 @@ def a6_create_baseline(state: RequirementState) -> dict:
     ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
     version = _next_baseline_version(ds)
 
-    # ── 1. 生成 22 列 RTM 溯源矩阵 ──
+    # ── 1. 确定是否为初始基线（是否有历史基线） ──
+    baselines_dir = os.path.join(KB_ROOT, "wiki/baselines")
+    _prev_baselines = []
+    if os.path.exists(baselines_dir):
+        _prev_baselines = sorted([
+            d for d in os.listdir(baselines_dir)
+            if os.path.isdir(os.path.join(baselines_dir, d)) and d.startswith("BL-")
+        ])
+    _is_initial = len(_prev_baselines) == 0
+    _prev_version = _prev_baselines[-1] if _prev_baselines else "初始基线，无历史版本"
+    _cr_batch = "初始基线" if _is_initial else f"CR-{ds}-{len(_prev_baselines):02d}"
+
+    # ── 加载历史基线 RTM（非初始基线时需要） ──
+    _prev_rtm_content = ""
+    if not _is_initial and _prev_baselines:
+        _prev_rtm_path = os.path.join(baselines_dir, _prev_version, f"RTM_{_prev_version}_需求溯源矩阵.md")
+        if os.path.exists(_prev_rtm_path):
+            with open(_prev_rtm_path, "r", encoding="utf-8") as f:
+                _prev_rtm_content = f.read()
+
+    # ── 2. 生成 22 列 RTM 溯源矩阵 ──
+    if _is_initial:
+        _rtm_status_inst = "需求状态：所有需求均标记为「新增」\n"
+        _rtm_req_4_5 = "4. 本次基线需求状态统一填「新增」\n5. 变更来源和变更差异详情填「初始基线，无历史版本」\n"
+    else:
+        _rtm_status_inst = f"""这是第{len(_prev_baselines) + 1}个基线版本。历史基线 {_prev_version} 的 RTM 内容如下（必须逐条处理）：
+{_prev_rtm_content[:8000]}
+
+要求：
+- 上一基线的每一条需求必须在本次 RTM 中保留，标记状态为「无变更」「修改」或「删除」
+- 禁止删除任何历史条目，状态为「删除」的条目必须保留行并填写变更差异详情
+- SRS 中不再出现的需求 → 标记为「删除」，差异详情写明被哪个新需求替代
+- 新增的需求 → 标记为「新增」，分配全新ID，变更批次填「{_cr_batch}」
+"""
+        _rtm_req_4_5 = f"""4. 本次基线需求状态必须从4种中选一：新增/无变更/修改/删除
+5. 变更来源填「{_cr_batch}」，删除条目在差异详情中写明被替代关系
+6. 【强制】保留所有旧基线ID，删除需求必须保留行仅标记状态，用于审计"""
+
     rtm_prompt = f"""请根据以下资料生成需求溯源矩阵（RTM），严格遵循需求溯源矩阵规范文档的22列字段规范。
 
 基线版本：{version}
-对比历史基线：初始基线，无历史版本
-需求状态：所有需求均标记为「新增」
-
+对比历史基线：{_prev_version}
+{_rtm_status_inst}
 SRS文档（摘要）：
 {state.get("srs_draft", "")[:10000]}
 
@@ -1732,7 +1814,7 @@ SRS文档（摘要）：
 | 行号 | 业务需求ID(BR) | 业务目标描述 | 原始需求ID(UR) | 原始需求来源 | 原始需求全文 |
 
 【SRS正式需求层 7-12】
-| 需求类型 | SRS需求ID(FR) | SRS需求名称 | SRS正式描述 | 验收标准 | 需求优先级 |
+| SRS需求类型 | SRS需求ID(FR) | SRS需求名称 | SRS正式描述 | 验收标准 | 需求优先级 |
 
 【基线比对差异层 13-16】
 | 本次基线需求状态 | 变更来源 | 变更差异详情 | 变更影响范围 |
@@ -1747,31 +1829,31 @@ SRS文档（摘要）：
 | 1 | BR-EQP-001 | 实现设备全生命周期管理 | UR-EQP-001 | 库房人员 |「设备出库时需要带配件清单」| 功能需求 | FR-EQP-001 | 配件清单管理 | 出库时根据模板生成配件清单 | 配件清单与设备型号绑定，逐项核对 | P0 | 新增 | 初始基线，无历史版本 | 初始基线，无历史版本 | 无 | UC-ELM-001 | 待第二阶段填充 | 待第二阶段填充 | DD-EQP-001 | 待第二阶段填充 | 待验收 |
 
 要求：
-1. BR/UR 编号从需求清单中直接取用，FR 编号从 SRS 中提取，三者一一对应
+1. BR/UR 编号从需求清单中直接取用，FR 编号从 SRS 中提取，三者一一对应（严禁BR/UR追到无关FR）
 2. 原始需求全文列必须完整引用需求清单中的「需求陈述」原文
-3. 需求类型：功能需求/非功能需求/接口需求
-4. 本次基线需求状态统一填「新增」
-5. 变更来源和变更差异详情填「初始基线，无历史版本」
-6. 正向追溯链路：BR → UR → FR → 建模产物 → 设计 → 开发 → 测试
-7. 至少生成5行以上（覆盖不同功能模块）
-8. Phase 1 尚未产生的列（设计文档ID、开发模块、测试用例ID）填「待第二阶段填充」"""
+3. SRS需求类型：功能需求/非功能需求/接口需求（列名必须用「SRS需求类型」）
+{_rtm_req_4_5}
+7. 正向追溯链路：BR → UR → FR → 建模产物 → 设计 → 开发 → 测试
+8. 至少生成5行以上（覆盖不同功能模块）
+9. Phase 1 尚未产生的列（设计文档ID、开发模块、测试用例ID）填「待第二阶段填充」"""
 
-    rtm = call_llm(rtm_prompt, system_prompt="你是配置管理专家，精通需求溯源矩阵（RTM）22列规范。输出内容中必须包含22列的Markdown表格。")
+    rtm = call_llm(rtm_prompt, system_prompt="你是配置管理专家，精通需求溯源矩阵（RTM）22列规范。输出内容中必须包含22列的Markdown表格。关键：SRS需求类型列名必须为「SRS需求类型」，对非初始基线必须保留所有旧条目。")
 
     # 为 RTM 添加元数据头部（规范 3.1 要求的基线元数据区），并做后处理
     rtm_meta_lines = []
     rtm_meta_lines.append("【基线元数据】")
     rtm_meta_lines.append("当前基线版本：" + version)
-    rtm_meta_lines.append("对比历史基线：初始基线，无历史版本")
+    rtm_meta_lines.append("对比历史基线：" + _prev_version)
     rtm_meta_lines.append("生成时间：" + datetime.now().strftime("%Y-%m-%d %H:%M"))
     rtm_meta_lines.append("生成主体：A6 需求基线智能体")
-    rtm_meta_lines.append("变更批次：初始基线")
+    rtm_meta_lines.append("变更批次：" + _cr_batch)
     rtm_meta_lines.append("文档状态：正式基线")
     rtm_meta_lines.append("")
     rtm = "\n".join(rtm_meta_lines) + "\n" + rtm
 
     # 后处理：修正 LLM 可能忽略的规范
     rtm = rtm.replace("智能医疗设备", "医疗设备")
+    rtm = rtm.replace("| 需求类型 |", "| SRS需求类型 |")
     rtm = rtm.replace("2023-10-27", version.replace("BL-", "").replace("-01", ""))
     if "| 行号 |" not in rtm:
         print("  [A6] RTM 可能不是22列格式，请检查")
@@ -1803,26 +1885,30 @@ SRS文档（摘要）：
     rtm = "\n".join(rtm_lines)
 
     # ── 2. 生成 CCB 评审记录 ──
+    _ccb_type = "初始基线审批" if _is_initial else f"变更基线审批（CR: {_cr_batch}）"
+    _ccb_verdict = state.get('ccb_verdict', '通过')
+    _ccb_comment = state.get('ccb_comment', '初始基线审批通过' if _is_initial else '变更基线审批通过')
     ccb_record = f"""# CCB 评审记录
 
 基线版本：{version}
 评审日期：{ds}
-评审类型：初始基线审批
+评审类型：{_ccb_type}
 
 ## 评审内容
 - 软件需求规格说明书（SRS）
 - 需求溯源矩阵（RTM）
 - 需求清单
 - UML建模产物
+{f'- 需求差异比对报告（DIFF）' if not _is_initial else ''}
 
 ## 评审结论
-{'[OK] 通过' if state.get('ccb_verdict', '通过') == '通过' else '[FAIL] 不通过'}
+{'[OK] 通过' if _ccb_verdict == '通过' else '[FAIL] 不通过'}
 
 ## 评审意见
-{state.get('ccb_comment', '初始基线审批通过')}
+{_ccb_comment}
 
 ## 审批人
-[待填写]
+俞儿游
 
 ## 关联文档
 - 需求验证报告

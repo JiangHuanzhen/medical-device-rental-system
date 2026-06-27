@@ -1,0 +1,99 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ===== 第一步：Actor定义 =====
+actor "库房人员" as WH
+actor "招商业务员" as SALES
+actor "财务人员" as FIN
+actor "运维工程师" as OPS
+actor "系统" as SYS
+
+' ===== 第二步：用例定义 =====
+
+' --- 设备管理用例 ---
+usecase (UC1: 设备入库校验) as UC1
+usecase (UC2: 设备出库管理) as UC2
+usecase (UC3: 紧急出库审批) as UC3
+usecase (UC4: 设备归还检测) as UC4
+usecase (UC5: 设备校准预警) as UC5
+usecase (UC6: 设备状态变更确认) as UC6
+
+' --- 租赁订单用例 ---
+usecase (UC7: 创建租赁合同) as UC7
+usecase (UC8: 合同资料预检) as UC8
+usecase (UC9: 设备信息双录校验) as UC9
+
+' --- 费用结算用例 ---
+usecase (UC10: 押金扣款处理) as UC10
+usecase (UC11: 医院对账差异分析) as UC11
+usecase (UC12: 紧急出库财务审核) as UC12
+
+' ===== 第三步：Actor-UseCase关联 =====
+WH --> UC1
+WH --> UC2
+WH --> UC3
+WH --> UC4
+WH --> UC5
+WH --> UC6
+
+SALES --> UC7
+SALES --> UC8
+SALES --> UC9
+
+FIN --> UC10
+FIN --> UC11
+FIN --> UC12
+
+OPS --> UC5
+OPS --> UC2
+
+' ===== 第四步：关系定义 =====
+
+' --- include关系 ---
+UC2 .> UC1 : <<include>>\n出库前必须\n完成入库校验
+UC7 .> UC8 : <<include>>\n创建合同前\n必须完成资料预检
+UC3 .> UC12 : <<include>>\n紧急出库必须\n经过财务审核
+
+' --- extend关系 ---
+UC2 ..> UC3 : <<extend>>\n设备过期时\n触发紧急审批
+UC10 ..> UC11 : <<extend>>\n对账异常时\n触发差异分析
+UC4 ..> UC9 : <<extend>>\n归还检测异常\n触发信息复核
+
+' ===== 第五步：注解 =====
+note right of UC1
+  【合并理由】BR-EQP-006的自动校验
+  与BR-EQP-001的过期锁定合并为
+  统一的入库校验用例
+end note
+
+note right of UC3
+  【拆分理由】紧急出库与常规出库
+  业务流程完全不同（需三方会签+
+  事后补签），故拆分为独立用例
+end note
+
+note right of UC6
+  【Actor映射】BR-FIN-005明确要求
+  财务人工确认设备状态，因此
+  UC6仅关联财务人员
+end note
+
+note right of UC10
+  【合并理由】BR-FIN-001的差异化审批
+  与BR-FIN-004的信用等级挂钩合并为
+  统一的押金扣款处理用例
+end note
+
+note right of UC5
+  【Actor映射】BR-EQP-004和BR-EQP-010
+  显示库房人员和运维工程师都需要
+  访问校准预警功能
+end note
+
+@enduml
+```
+@enduml

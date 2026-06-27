@@ -1,0 +1,98 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+actor "库房人员" as WH
+actor "运维工程师" as OPS
+actor "招商业务员" as BIZ
+actor "财务" as FIN
+actor "质控部门" as QC
+actor "科室主任" as DEPT
+actor "库房主管" as WHM
+
+rectangle "设备校准管理" {
+  usecase "UC1: 监控设备校准状态" as UC1
+  usecase "UC2: 校准到期预警" as UC2
+  usecase "UC3: 设备出库管控" as UC3
+  usecase "UC4: 发起紧急出库审批" as UC4
+  usecase "UC5: 审批紧急出库" as UC5
+  usecase "UC6: 上传客户确认文件" as UC6
+  usecase "UC7: 设置校准承诺时限" as UC7
+  usecase "UC8: 设置设备价值阈值" as UC8
+  usecase "UC9: 查看审批流程状态" as UC9
+  usecase "UC10: 触发锁库操作" as UC10
+}
+
+' Actor 关联
+WH --> UC1
+WH --> UC2
+WH --> UC3
+WH --> UC4
+OPS --> UC1
+OPS --> UC2
+OPS --> UC4
+BIZ --> UC1
+BIZ --> UC2
+FIN --> UC8
+QC --> UC5
+DEPT --> UC5
+WHM --> UC5
+WHM --> UC10
+
+' include 关系
+UC4 .> UC6 : <<include>>
+UC4 .> UC7 : <<include>>
+
+' extend 关系
+UC3 ..> UC4 : <<extend>>
+UC5 ..> UC8 : <<extend>>
+
+' 注解
+note right of UC1
+  **Actor映射决策**:
+  库房人员、运维工程师、招商业务员
+  均需监控校准状态，合并为同一用例
+end note
+
+note right of UC2
+  **用例合并理由**:
+  所有涉众的预警需求核心业务相同，
+  仅触发条件不同，合并为一个用例
+end note
+
+note right of UC3
+  **用例拆分理由**:
+  出库管控是独立业务流程，
+  与预警和审批流程不同
+end note
+
+note right of UC4
+  **用例合并理由**:
+  不同角色发起的紧急出库审批
+  核心流程相同，合并为一个用例
+end note
+
+note right of UC5
+  **用例拆分理由**:
+  审批流程涉及多角色协作，
+  与发起流程业务逻辑不同
+end note
+
+note right of UC6
+  **强制步骤**:
+  所有紧急出库必须上传客户确认文件
+end note
+
+note right of UC7
+  **强制步骤**:
+  紧急出库必须设置校准承诺时限
+end note
+
+note right of UC8
+  **扩展条件**:
+  仅当设备原值≥50万元时触发
+end note
+
+@enduml
+```
+@enduml

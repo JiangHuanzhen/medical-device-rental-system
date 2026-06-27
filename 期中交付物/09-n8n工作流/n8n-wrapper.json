@@ -1,0 +1,148 @@
+{
+  "name": "医疗器械租赁管理系统 — 需求工程全流程（n8n 工作流1）",
+  "description": "教材§8：将A1涉众对话→A2需求分析→A3UML建模→A4SRS生成→A5验证→CCB审批→A6基线创立编排为一键触发工作流",
+  "nodes": [
+    {
+      "name": "手动触发",
+      "type": "n8n-nodes-base.manualTrigger",
+      "position": [200, 300],
+      "parameters": {}
+    },
+    {
+      "name": "启动 SSE 服务器",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [400, 300],
+      "parameters": {
+        "command": "python",
+        "commandArguments": "sse_server.py",
+        "executeInFolder": "{{$env.PROJECT_ROOT}}",
+        "waitForFinish": false
+      }
+    },
+    {
+      "name": "调用工作流API",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [600, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8502/start",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    },
+    {
+      "name": "等待 CCB 审批",
+      "type": "n8n-nodes-base.webhook",
+      "position": [800, 300],
+      "parameters": {
+        "path": "ccb-callback",
+        "responseMode": "onReceived",
+        "options": {
+          "responseData": "{{ $json }}"
+        }
+      }
+    },
+    {
+      "name": "提交 CCB 审批",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1000, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8502/ccb",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "verdict", "value": "={{ $json.verdict }}" },
+            { "name": "comment", "value": "={{ $json.comment }}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "判断审批结果",
+      "type": "n8n-nodes-base.if",
+      "position": [1200, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.verdict }}",
+              "operation": "contains",
+              "value2": "通过"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "审批通过 → 继续",
+      "type": "n8n-nodes-base.noOp",
+      "position": [1400, 200],
+      "parameters": {}
+    },
+    {
+      "name": "审批不通过 → 回退A1/A2",
+      "type": "n8n-nodes-base.noOp",
+      "position": [1400, 500],
+      "parameters": {}
+    },
+    {
+      "name": "检查工作流状态",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1600, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:8502/status",
+        "options": {
+          "timeout": 300000
+        },
+        "interval": 5000
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "完成通知",
+      "type": "n8n-nodes-base.noOp",
+      "position": [1800, 200],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "手动触发": {
+      "main": [[ { "node": "启动 SSE 服务器", "index": 0 } ]]
+    },
+    "启动 SSE 服务器": {
+      "main": [[ { "node": "调用工作流API", "index": 0 } ]]
+    },
+    "调用工作流API": {
+      "main": [[ { "node": "等待 CCB 审批", "index": 0 } ]]
+    },
+    "等待 CCB 审批": {
+      "main": [[ { "node": "提交 CCB 审批", "index": 0 } ]]
+    },
+    "提交 CCB 审批": {
+      "main": [[ { "node": "判断审批结果", "index": 0 } ]]
+    },
+    "判断审批结果": {
+      "main": [
+        [ { "node": "审批通过 → 继续", "index": 0 } ],
+        [ { "node": "审批不通过 → 回退A1/A2", "index": 0 } ]
+      ]
+    },
+    "审批通过 → 继续": {
+      "main": [[ { "node": "检查工作流状态", "index": 0 } ]]
+    },
+    "检查工作流状态": {
+      "main": [
+        [ { "node": "完成通知", "index": 0 } ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Shanghai"
+  },
+  "staticData": null,
+  "tags": []
+}

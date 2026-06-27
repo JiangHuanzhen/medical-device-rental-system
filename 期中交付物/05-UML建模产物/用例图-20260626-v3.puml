@@ -1,0 +1,128 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ============================================
+' 第一步：涉众 → Actor 映射
+' ============================================
+actor "库房人员" as WH
+actor "招商业务员" as BD
+actor "运维工程师" as OPS
+actor "财务" as FIN
+actor "系统管理员" as ADMIN
+
+' 注解：库房人员、运维工程师、财务、招商业务员是直接与系统交互的角色。
+' 系统管理员负责配置管理，是独立的Actor。
+' 科室主任、质控部门、业务经理等审批角色不在用例图中体现，因为他们通过审批流程与系统交互，而非直接操作用例。
+
+' ============================================
+' 第二步：从需求中提取用例
+' ============================================
+
+' --- 设备管理 (EQP) ---
+usecase (UC1) as "设备出库\n强制校准校验" ' BR-EQP-001, BR-EQP-002, BR-EQP-007
+usecase (UC2) as "紧急出库审批" ' BR-EQP-002, BR-EQP-007, BR-FIN-004, BR-FIN-007
+usecase (UC3) as "校准有效期预警" ' BR-EQP-003, BR-EQP-004, BR-CFG-001
+usecase (UC4) as "设备归还检测" ' BR-EQP-005, BR-EQP-006
+usecase (UC5) as "设备出库前检测" ' BR-EQP-009, BR-EQP-010
+
+' --- 租赁订单 (ORD) ---
+usecase (UC6) as "创建租赁合同" ' BR-ORD-001, BR-ORD-002, BR-ORD-003
+
+' --- 费用结算 (FIN) ---
+usecase (UC7) as "押金扣款审批" ' BR-FIN-001, BR-FIN-005
+usecase (UC8) as "对账差异处理" ' BR-FIN-002
+usecase (UC9) as "设备状态恢复确认" ' BR-FIN-006
+
+' --- 系统配置 (CFG) ---
+usecase (UC10) as "配置校准预警策略" ' BR-CFG-001
+
+' ============================================
+' 第三步：建立关系
+' ============================================
+
+' --- Actor 与 用例 关联 ---
+WH --> UC1
+WH --> UC2
+WH --> UC3
+WH --> UC4
+WH --> UC5
+
+BD --> UC6
+
+OPS --> UC4
+OPS --> UC5
+
+FIN --> UC2
+FIN --> UC7
+FIN --> UC8
+FIN --> UC9
+
+ADMIN --> UC10
+
+' --- <<include>> 关系 ---
+' UC1 设备出库强制校准校验 包含 UC3 校准有效期预警 (因为校验需要依赖预警信息)
+UC1 ..> UC3 : <<include>>
+
+' UC6 创建租赁合同 包含 发票信息校验 (BR-ORD-002) 和 资料预检 (BR-ORD-003)
+usecase (UC6a) as "发票信息校验"
+usecase (UC6b) as "资料预检"
+UC6 ..> UC6a : <<include>>
+UC6 ..> UC6b : <<include>>
+
+' --- <<extend>> 关系 ---
+' UC1 设备出库强制校准校验 在特定条件下 (校准过期且紧急) 扩展出 UC2 紧急出库审批
+UC1 ..> UC2 : <<extend>>\n校准过期且\n紧急需求
+
+' UC7 押金扣款审批 在特定条件下 (客户信用等级高) 扩展出 自动扣款处理
+usecase (UC7a) as "自动扣款处理"
+UC7 ..> UC7a : <<extend>>\n信用等级A级\n且金额≤2万
+
+' ============================================
+' 第四步：附加注解
+' ============================================
+
+note right of WH
+  **Actor映射决策:**
+  库房人员是设备出库、归还、预警等操作的主要执行者。
+  紧急出库审批流程涉及多方，但发起者是库房人员。
+end note
+
+note right of BD
+  **Actor映射决策:**
+  招商业务员是租赁合同创建和维护的主要负责人。
+end note
+
+note right of OPS
+  **Actor映射决策:**
+  运维工程师负责设备的技术检测和性能评估。
+end note
+
+note right of FIN
+  **Actor映射决策:**
+  财务负责费用结算、对账和财务相关的审批环节。
+end note
+
+note right of ADMIN
+  **Actor映射决策:**
+  系统管理员负责配置系统参数，如预警策略。
+end note
+
+note left of UC1
+  **用例合并理由:**
+  BR-EQP-001 (强制校验) 和 BR-EQP-002 (紧急出库) 都围绕“设备出库”这一核心业务活动。
+  强制校验是常规流程，紧急出库是特殊条件下的扩展流程，因此合并为一个基用例 (UC1) 和一个扩展用例 (UC2)。
+end note
+
+note left of UC7
+  **用例合并理由:**
+  BR-FIN-001 (分级审批) 和 BR-FIN-005 (信用挂钩) 都是关于“押金扣款”的审批流程。
+  它们共享相同的业务目标 (押金扣款处理)，只是审批规则不同，因此合并为一个用例，并通过扩展点体现差异化规则。
+end note
+
+@enduml
+```
+@enduml

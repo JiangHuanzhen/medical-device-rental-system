@@ -1,0 +1,261 @@
+@startuml
+|#LightBlue|系统|
+start
+:扫描所有设备校准有效期;
+:生成临期设备清单;
+
+|#LightGreen|运维工程师|
+:配置预警策略;
+note right
+  策略示例：
+  每周一9:30推送清单
+  到期前30/15/7天单独提醒
+end note
+
+|#LightBlue|系统|
+:根据策略生成提醒任务;
+
+fork
+  :推送每周临期清单;
+fork again
+  :推送到期前30天提醒;
+fork again
+  :推送到期前15天提醒;
+fork again
+  :推送到期前7天提醒;
+end fork
+
+|#LightYellow|库房人员|
+:接收提醒;
+
+if ([设备已完成校准?]) then (是)
+  :更新设备校准状态;
+  stop
+else (否)
+  :安排送检或替换;
+  :更新设备校准状态;
+  stop
+endif
+
+
+@enduml
+
+@startuml
+|#LightBlue|系统|
+start
+:检查设备校准有效期;
+
+if ([距离校准到期 <= 3天?]) then (是)
+  :自动锁定设备库位;
+  note right: 系统级强制触发
+else (否)
+  :设备状态正常，不锁库;
+  stop
+endif
+
+|#LightYellow|招商业务员|
+:发起出库申请;
+
+|#LightBlue|系统|
+:检查设备库位状态;
+
+if ([设备已锁库?]) then (是)
+  :弹出阻断弹窗;
+  :提供“紧急出库申请”入口;
+else (否)
+  :正常出库流程;
+  stop
+endif
+
+|#LightYellow|招商业务员|
+:点击“紧急出库申请”;
+:填写申请原因及承诺;
+:上传客户签字文件;
+note right: 电子签章或手写签名拍照
+
+|#LightCyan|设备科长|
+:审批紧急出库申请;
+
+if ([审批通过?]) then (是)
+  |#LightCyan|质控人员|
+  :审批紧急出库申请;
+  if ([审批通过?]) then (是)
+    |#LightBlue|系统|
+    :生成“紧急放行”标识;
+    :记录审批日志;
+    :放行出库;
+    stop
+  else (否)
+    |#LightBlue|系统|
+    :拒绝出库，流程结束;
+    stop
+  endif
+else (否)
+  |#LightBlue|系统|
+  :拒绝出库，流程结束;
+  stop
+endif
+
+
+@enduml
+
+@startuml
+|#LightYellow|招商业务员|
+start
+:选择设备并发起出库;
+
+|#LightBlue|系统|
+:检查设备校准有效期;
+
+if ([设备校准过期?]) then (是)
+  :弹出阻断弹窗;
+  :显示“禁止出库”提示;
+  if ([是否为紧急临床需求?]) then (是)
+    :弹窗提供“发起紧急审批”按钮;
+    |#LightYellow|招商业务员|
+    :点击“发起紧急审批”;
+    :填写紧急出库申请单;
+    :提交审批;
+    |#LightBlue|系统|
+    :进入紧急审批流程;
+    stop
+  else (否)
+    |#LightBlue|系统|
+    :流程结束，出库被阻止;
+    stop
+  endif
+else (否)
+  if ([距离校准到期 <= 7天?]) then (是)
+    :弹出预警提醒;
+    note right: 非阻断性提醒
+  endif
+  |#LightBlue|系统|
+  :允许正常出库;
+  stop
+endif
+
+
+@enduml
+
+@startuml
+actor "招商业务员" as User
+participant "出库界面" as UI
+participant "出库控制器" as Controller
+participant "设备服务" as DeviceService
+participant "校准服务" as CalibrationService
+participant "审批服务" as ApprovalService
+database "数据库" as DB
+
+User -> UI: 选择设备，点击出库
+UI -> Controller: 请求出库(设备ID)
+Controller -> DeviceService: 检查设备状态(设备ID)
+DeviceService -> CalibrationService: 获取校准有效期(设备ID)
+CalibrationService -> DB: 查询校准记录
+DB --> CalibrationService: 返回校准记录
+CalibrationService --> DeviceService: 返回校准状态(过期)
+DeviceService --> Controller: 返回状态(过期，已锁库)
+Controller --> UI: 返回阻断信息及紧急入口
+UI --> User: 显示阻断弹窗及“紧急审批”按钮
+
+User -> UI: 点击“紧急审批”
+UI -> Controller: 发起紧急审批(设备ID, 原因)
+Controller -> ApprovalService: 创建紧急审批单(设备ID, 原因)
+ApprovalService -> DB: 保存审批单
+DB --> ApprovalService: 返回审批单ID
+ApprovalService --> Controller: 返回审批单创建成功
+Controller -> UI: 跳转至审批流程
+UI -> User: 显示审批表单
+
+User -> UI: 填写审批信息，上传文件
+UI -> Controller: 提交审批(审批单ID, 文件)
+Controller -> ApprovalService: 提交审批(审批单ID)
+ApprovalService -> DB: 更新审批单状态(待审批)
+DB --> ApprovalService: 更新成功
+ApprovalService --> Controller: 返回提交成功
+Controller -> UI: 返回提交成功消息
+UI -> User: 显示“审批已提交”
+
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID: UUID [PK]
+  --
+  设备名称: VARCHAR(100)
+  设备型号: VARCHAR(50)
+  设备状态: VARCHAR(20) // 正常, 锁库, 维修中
+  当前库位: VARCHAR(50)
+  创建时间: DATETIME
+}
+
+table(校准记录) {
+  + 校准记录ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  校准日期: DATE
+  校准有效期至: DATE
+  校准结果: VARCHAR(20) // 合格, 不合格
+  校准机构: VARCHAR(100)
+  创建时间: DATETIME
+}
+
+table(出库单) {
+  + 出库单ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  申请人ID: UUID [FK]
+  出库类型: VARCHAR(20) // 租赁, 调拨, 借出
+  出库时间: DATETIME
+  是否紧急放行: BOOLEAN
+  审批单ID: UUID [FK] [nullable]
+  创建时间: DATETIME
+}
+
+table(紧急审批单) {
+  + 审批单ID: UUID [PK]
+  --
+  设备ID: UUID [FK]
+  申请人ID: UUID [FK]
+  申请原因: TEXT
+  承诺完成校准时间: DATETIME
+  客户确认文件路径: VARCHAR(255)
+  审批状态: VARCHAR(20) // 待审批, 已通过, 已拒绝
+  设备科长审批人ID: UUID [FK] [nullable]
+  质控人员审批人ID: UUID [FK] [nullable]
+  创建时间: DATETIME
+}
+
+table(用户) {
+  + 用户ID: UUID [PK]
+  --
+  用户名: VARCHAR(50)
+  角色: VARCHAR(20) // 招商业务员, 库房人员, 运维工程师, 财务, 设备科长, 质控人员
+  部门: VARCHAR(50)
+  创建时间: DATETIME
+}
+
+table(预警策略) {
+  + 策略ID: UUID [PK]
+  --
+  策略名称: VARCHAR(50)
+  推送频率: VARCHAR(20) // 每周一, 每日
+  推送时间: TIME
+  提前天数: INT // 30, 15, 7
+  是否启用: BOOLEAN
+  创建时间: DATETIME
+}
+
+设备 ||--o{ 校准记录 : "有"
+设备 ||--o{ 出库单 : "涉及"
+设备 ||--o{ 紧急审批单 : "触发"
+用户 ||--o{ 出库单 : "申请"
+用户 ||--o{ 紧急审批单 : "申请"
+用户 ||--o{ 紧急审批单 : "审批(设备科长)"
+用户 ||--o{ 紧急审批单 : "审批(质控人员)"
+出库单 ||--o| 紧急审批单 : "关联"
+
+
+@enduml

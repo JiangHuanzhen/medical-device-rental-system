@@ -1,0 +1,114 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+actor "招商业务员" as Sales
+actor "库房人员" as Warehouse
+actor "运维工程师" as Ops
+actor "财务人员" as Finance
+actor "科室主任" as DeptHead
+actor "质控部门" as QC
+
+rectangle "设备管理" {
+  usecase "UC1: 设备校准到期预警与管控" as UC1
+  usecase "UC2: 发起紧急出库审批" as UC2
+  usecase "UC3: 执行紧急出库审批" as UC3
+  usecase "UC4: 设备归还检测" as UC4
+  usecase "UC5: 设备归还异常处理" as UC5
+  usecase "UC6: 设备归还复核" as UC6
+  usecase "UC7: 查看设备校准状态" as UC7
+  usecase "UC8: 管理设备检测清单模板" as UC8
+  usecase "UC9: 处理设备归还财务审核" as UC9
+}
+
+Sales --> UC1
+Sales --> UC2
+Sales --> UC4
+Sales --> UC7
+
+Warehouse --> UC1
+Warehouse --> UC3
+Warehouse --> UC6
+Warehouse --> UC7
+
+Ops --> UC8
+Ops --> UC5
+
+Finance --> UC9
+Finance --> UC7
+
+DeptHead --> UC3
+QC --> UC3
+
+UC2 .> UC3 : <<include>>
+UC4 .> UC6 : <<include>>
+UC4 .> UC5 : <<extend>>
+UC5 .> UC9 : <<extend>>
+
+note right of UC1
+  **合并理由**：BR-EQP-001和BR-EQP-005
+  都涉及校准到期预警，只是覆盖
+  设备状态范围不同，核心业务
+  价值相同，合并为一个用例。
+end note
+
+note right of UC2
+  **合并理由**：BR-EQP-002中招商业务员
+  发起紧急出库审批，与后续审批
+  流程（UC3）分离，因为发起和
+  审批是不同的Actor职责。
+end note
+
+note right of UC3
+  **合并理由**：BR-EQP-006、BR-EQP-010、
+  BR-EQP-012、BR-EQP-014都描述
+  紧急出库审批流程，虽然不同涉众
+  对审批顺序有不同看法，但核心
+  业务流程相同，合并为一个用例。
+end note
+
+note right of UC4
+  **拆分理由**：BR-EQP-003、BR-EQP-004、
+  BR-EQP-007、BR-EQP-008、BR-EQP-009、
+  BR-EQP-011都涉及设备归还检测，但
+  检测（UC4）、异常处理（UC5）、
+  复核（UC6）是三个不同的业务流程，
+  由不同Actor执行，拆分为独立用例。
+end note
+
+note right of UC5
+  **合并理由**：BR-EQP-004、BR-EQP-009、
+  BR-EQP-011都描述检测异常后的处理
+  流程，虽然触发条件和处理方式略有
+  不同，但核心业务价值相同，合并。
+end note
+
+note right of UC6
+  **拆分理由**：BR-EQP-008明确要求
+  "初检-复核"双人验证，复核是独立
+  的业务步骤，由库房人员执行，与
+  初检（UC4）分离。
+end note
+
+note right of UC7
+  **合并理由**：多个需求中提到查看
+  设备校准状态，这是一个通用的
+  查询功能，所有涉众都可能需要。
+end note
+
+note right of UC8
+  **合并理由**：BR-EQP-007和BR-EQP-013
+  都要求检测清单模板统一，由运维
+  工程师管理模板，财务人员使用。
+end note
+
+note right of UC9
+  **拆分理由**：BR-EQP-011中财务人员
+  的特殊审批是独立的业务流程，与
+  技术层面的异常处理（UC5）分离。
+end note
+
+@enduml
+```
+@enduml

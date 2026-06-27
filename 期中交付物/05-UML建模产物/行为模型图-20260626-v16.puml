@@ -1,0 +1,271 @@
+@startuml
+|#LightBlue|库房人员|
+start
+:发起紧急出库申请;
+note right
+  系统自动校验设备校准状态，
+  触发“锁库”后的紧急通道。
+end note
+:填写申请信息，上传客户签字文件;
+|#LightGreen|系统|
+:校验文件是否上传;
+if (文件已上传?) then (是)
+  :生成紧急出库单;
+  :根据设备类型和发起人角色，确定审批流程;
+else (否)
+  :拒绝提交，提示“必须上传客户签字文件”;
+  stop
+endif
+
+|#LightYellow|库房主管|
+:审批节点1: 确认设备状态与库存;
+if (设备在库且状态正常?) then (是)
+  :审批通过;
+else (否)
+  :审批驳回，流程终止;
+  stop
+endif
+
+|#LightCyan|质控部门|
+:审批节点2: 质量审核;
+if (设备校准过期风险可控?) then (是)
+  :审批通过;
+else (否)
+  :审批驳回，流程终止;
+  stop
+endif
+
+|#LightPink|科室主任|
+:审批节点3: 确认需求;
+if (确为紧急需求?) then (是)
+  :审批通过;
+else (否)
+  :审批驳回，流程终止;
+  stop
+endif
+
+|#LightGreen|系统|
+:触发“弹窗确认”;
+:操作人员勾选“已向客户说明并确认”;
+:记录校准承诺时限 (默认24h/72h);
+:更新设备状态为“紧急出库”;
+|#LightBlue|库房人员|
+:执行出库操作;
+stop
+
+@enduml
+
+@startuml
+|#LightGreen|系统|
+start
+:定时任务: 扫描所有设备校准日期;
+while (遍历设备列表) is not (结束)
+  :获取设备当前状态;
+  if (设备状态为“在库”?) then (是)
+    :计算距离校准到期天数;
+    if (距离到期 <= 3天?) then (是)
+      :触发“锁库”操作;
+      :更新设备状态为“已锁库”;
+      :发送“锁库通知”给库房主管;
+    else (否)
+      if (距离到期 <= 7天?) then (是)
+        :触发“禁止出库”操作;
+        :更新设备状态为“禁止出库”;
+        :发送“预警通知”给库房人员;
+      else (否)
+        :设备状态正常，无操作;
+      endif
+    endif
+  else (否)
+    if (设备状态为“出库在途”?) then (是)
+      :计算距离校准到期天数;
+      if (距离到期 <= 7天?) then (是)
+        :发送“在途设备预警”给招商业务员;
+      else (否)
+        :无操作;
+      endif
+    else (否)
+      if (设备状态为“待验收”?) then (是)
+        :计算距离校准到期天数;
+        if (距离到期 <= 7天?) then (是)
+          :发送“待验收设备预警”给库房人员;
+        else (否)
+          :无操作;
+        endif
+      else (否)
+        :其他状态，无操作;
+      endif
+    endif
+  endif
+  :处理下一个设备;
+endwhile (结束)
+stop
+
+@enduml
+
+@startuml
+|#LightBlue|库房人员|
+start
+:发起高价值设备紧急出库申请;
+|#LightGreen|系统|
+:校验设备原值;
+if (设备原值 >= 50万元?) then (是)
+  :标记为“高价值设备”;
+  :触发财务前置校验规则;
+  if (客户押金充足?) then (是)
+    :校验通过;
+  else (否)
+    :提示“押金不足，需补缴”;
+    :生成押金补缴单;
+    |#LightBlue|库房人员|
+    :通知客户补缴押金;
+    |#LightGreen|系统|
+    if (押金已补缴?) then (是)
+      :校验通过;
+    else (否)
+      :流程挂起，等待补缴;
+      stop
+    endif
+  endif
+else (否)
+  :走普通紧急出库流程;
+  stop
+endif
+
+|#LightYellow|库房主管|
+:审批节点1: 确认设备状态与库存;
+|#LightCyan|质控部门|
+:审批节点2: 质量审核;
+|#LightPink|科室主任|
+:审批节点3: 确认需求;
+|#LightGreen|系统|
+:记录出库信息，生成财务凭证草稿;
+:执行出库操作;
+|#LightGray|财务|
+:事后审核 (月度对账);
+if (所有凭证和文件合规?) then (是)
+  :确认财务凭证;
+else (否)
+  :发起财务异常处理流程;
+  stop
+endif
+stop
+
+@enduml
+
+@startuml
+actor "库房人员" as User
+participant "紧急出库界面" as UI
+participant "紧急出库Controller" as Controller
+participant "紧急出库Service" as Service
+participant "设备Repository" as DeviceRepo
+participant "审批流程Repository" as ApprovalRepo
+database "数据库" as DB
+
+User -> UI: 点击“发起紧急出库”
+UI -> Controller: submitUrgentOutbound(deviceId, reason, file)
+Controller -> Service: createUrgentOutboundOrder(deviceId, reason, file)
+Service -> DeviceRepo: findDeviceById(deviceId)
+DeviceRepo -> DB: SELECT * FROM device WHERE id = ?
+DB --> DeviceRepo: deviceData
+DeviceRepo --> Service: device
+
+alt 设备状态为“已锁库”
+    Service -> Service: validateFile(file)
+    alt 文件上传成功
+        Service -> Service: determineApprovalFlow(device, userRole)
+        Service -> ApprovalRepo: createApprovalFlow(flowData)
+        ApprovalRepo -> DB: INSERT INTO approval_flow ...
+        DB --> ApprovalRepo: flowId
+        ApprovalRepo --> Service: flowId
+        Service -> Service: updateDeviceStatus(deviceId, "紧急出库审批中")
+        Service --> Controller: success(flowId)
+        Controller --> UI: 显示“申请成功，等待审批”
+        UI --> User: 申请成功通知
+    else 文件上传失败
+        Service --> Controller: failure("必须上传客户签字文件")
+        Controller --> UI: 显示错误信息
+        UI --> User: 错误提示
+    end
+else 设备状态非“已锁库”
+    Service --> Controller: failure("设备未处于锁库状态，无法发起紧急出库")
+    Controller --> UI: 显示错误信息
+    UI --> User: 错误提示
+end
+
+@enduml
+
+@startuml
+!define table(x) class x << (T,#FFAAAA) >>
+
+table(设备) {
+  + 设备ID (PK)
+  --
+  设备名称
+  设备编号
+  设备类型
+  原值
+  当前状态 (在库/出库在途/待验收/已锁库/禁止出库)
+  校准日期
+  预警阈值 (7天/3天)
+}
+
+table(设备状态变更记录) {
+  + 记录ID (PK)
+  --
+  设备ID (FK)
+  变更前状态
+  变更后状态
+  变更时间
+  操作人
+  备注
+}
+
+table(紧急出库申请) {
+  + 申请ID (PK)
+  --
+  设备ID (FK)
+  申请人
+  申请时间
+  紧急原因
+  客户签字文件路径
+  校准承诺时限
+  申请状态 (待审批/审批中/已通过/已驳回)
+}
+
+table(审批流程) {
+  + 流程ID (PK)
+  --
+  申请ID (FK)
+  当前节点
+  流程状态 (进行中/已完成/已终止)
+}
+
+table(审批节点) {
+  + 节点ID (PK)
+  --
+  流程ID (FK)
+  审批角色 (库房主管/质控/科室主任)
+  审批人
+  审批意见
+  审批时间
+  节点状态 (待审批/已通过/已驳回)
+}
+
+table(预警记录) {
+  + 记录ID (PK)
+  --
+  设备ID (FK)
+  预警类型 (在途预警/待验收预警/禁止出库预警/锁库通知)
+  预警时间
+  接收人
+  是否已读
+}
+
+设备 ||--o{ 设备状态变更记录 : 记录变更历史
+设备 ||--o{ 紧急出库申请 : 发起申请
+设备 ||--o{ 预警记录 : 产生预警
+紧急出库申请 ||--|| 审批流程 : 包含
+审批流程 ||--o{ 审批节点 : 包含多个节点
+
+@enduml

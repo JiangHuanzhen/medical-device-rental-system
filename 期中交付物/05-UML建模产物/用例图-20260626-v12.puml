@@ -1,0 +1,171 @@
+@startuml
+```plantuml
+@startuml
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ============================================
+' 第一步：涉众 → Actor 映射
+' ============================================
+actor "招商业务员" as Sales
+actor "库房人员" as Warehouse
+actor "运维工程师" as Ops
+actor "设备科长" as Manager
+actor "质控人员" as QC
+
+' ============================================
+' 第二步：从需求中提取用例
+' ============================================
+rectangle "设备管理" {
+  ' --- 用例1: 设备校准预警 ---
+  ' 合并理由：BR-EQP-001/004/007/009/011/013 均围绕"校准到期预警"这一核心业务价值，
+  ' 只是触发条件（时间窗口、设备状态）不同，业务流程相同（系统自动推送提醒）
+  usecase "设备校准预警" as UC1
+  note right of UC1
+    合并：BR-EQP-001/004/007/009/011/013
+    覆盖所有非报废设备状态
+    支持周报+关键节点提醒
+  end note
+
+  ' --- 用例2: 设备出库管控 ---
+  ' 合并理由：BR-EQP-001 的"7天禁止出库、3天锁库"是同一业务流程的两个阶段
+  usecase "设备出库管控" as UC2
+  note right of UC2
+    合并：BR-EQP-001
+    7天禁止出库 + 3天锁库
+  end note
+
+  ' --- 用例3: 紧急出库审批 ---
+  ' 合并理由：BR-EQP-002/005 描述同一审批流程，只是审批角色略有不同
+  usecase "紧急出库审批" as UC3
+  note right of UC3
+    合并：BR-EQP-002/005
+    双重审批（设备科长+质控）
+    24小时校准承诺
+  end note
+
+  ' --- 用例4: 设备归还检测 ---
+  ' 合并理由：BR-EQP-003/006/008/010/012/014 均围绕"归还检测"流程
+  usecase "设备归还检测" as UC4
+  note right of UC4
+    合并：BR-EQP-003/006/008/010/012/014
+    强制统一模板
+    初检→复核流程
+    自动比对基准值
+  end note
+
+  ' --- 用例5: 设备出库检测 ---
+  ' 拆分理由：出库检测与归还检测虽然模板相同，但业务流程不同（出库是前置检测，归还是后置检测）
+  usecase "设备出库检测" as UC5
+  note right of UC5
+    拆分：BR-EQP-006
+    非关键项50%抽检
+    可配置抽检比例
+  end note
+
+  ' --- 用例6: 设备入库检测 ---
+  ' 拆分理由：入库检测是独立的业务流程，与归还检测的触发条件不同
+  usecase "设备入库检测" as UC6
+  note right of UC6
+    拆分：BR-EQP-010
+    统一检查清单模板
+  end note
+
+  ' --- 用例7: 校准异常处理 ---
+  ' 拆分理由：BR-EQP-014 描述的"分级预警+流程触发"是独立的异常处理流程
+  usecase "校准异常处理" as UC7
+  note right of UC7
+    拆分：BR-EQP-014
+    自动触发维修工单
+    备件校验建议
+  end note
+
+  ' --- 用例8: 设备状态管理 ---
+  ' 合并理由：多个需求涉及设备状态定义（在库/在途/出租/待验收等）
+  usecase "设备状态管理" as UC8
+  note right of UC8
+    合并：BR-EQP-007/011/013
+    定义独立状态
+    支持全生命周期追踪
+  end note
+}
+
+' ============================================
+' 第三步：建立关系
+' ============================================
+
+' --- Actor与用例关联 ---
+Sales --> UC1  ' 招商业务员接收预警
+Sales --> UC4  ' 招商业务员执行归还初检
+Sales --> UC5  ' 招商业务员执行出库检测
+
+Warehouse --> UC1  ' 库房人员接收预警
+Warehouse --> UC2  ' 库房人员执行出库管控
+Warehouse --> UC4  ' 库房人员执行归还复核
+Warehouse --> UC6  ' 库房人员执行入库检测
+
+Ops --> UC1  ' 运维工程师接收预警
+Ops --> UC3  ' 运维工程师发起紧急审批
+Ops --> UC5  ' 运维工程师配置抽检比例
+Ops --> UC7  ' 运维工程师处理校准异常
+Ops --> UC8  ' 运维工程师管理设备状态
+
+Manager --> UC3  ' 设备科长审批紧急出库
+QC --> UC3  ' 质控人员审批紧急出库
+
+' --- <<include>> 关系 ---
+UC4 --> UC5 : <<include>>\n必须基于出库检测模板
+note right of UC4 --> UC5
+  BR-EQP-008: 归还检测
+  必须使用与出库检测
+  相同的标准模板
+end note
+
+UC4 --> UC6 : <<include>>\n必须基于入库检测模板
+note right of UC4 --> UC6
+  BR-EQP-010: 归还检测
+  必须使用与入库检测
+  相同的标准模板
+end note
+
+' --- <<extend>> 关系 ---
+UC2 --> UC3 : <<extend>>\n锁库后紧急需求
+note right of UC2 --> UC3
+  BR-EQP-002/005:
+  锁库后可通过
+  紧急审批通道放行
+end note
+
+UC4 --> UC7 : <<extend>>\n偏差超出阈值
+note right of UC4 --> UC7
+  BR-EQP-014:
+  检测偏差超阈值时
+  触发异常处理流程
+end note
+
+' ============================================
+' 第四步：附加注解
+' ============================================
+note top of Sales
+  Actor映射说明：
+  招商业务员 → 执行出库/归还检测
+  接收校准预警
+end note
+
+note top of Warehouse
+  Actor映射说明：
+  库房人员 → 执行入库/归还复核
+  执行出库管控操作
+end note
+
+note top of Ops
+  Actor映射说明：
+  运维工程师 → 管理设备全生命周期
+  配置检测参数
+  处理异常流程
+end note
+
+@enduml
+```
+@enduml
