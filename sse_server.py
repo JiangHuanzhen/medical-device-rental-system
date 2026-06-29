@@ -38,6 +38,15 @@ from requirement_workflow import (
     WorkflowStopped,
 )
 
+from design_workflow import (
+    build_design_workflow,
+    DesignState,
+    set_b5_event,
+    set_b5_result,
+    set_ccb2_event,
+    set_ccb2_result,
+)
+
 from langgraph.checkpoint.memory import MemorySaver
 
 # ── 全局状态 ──
@@ -46,6 +55,7 @@ STAKEHOLDERS = list(STAKEHOLDER_CONFIG.keys())
 _wf_running = False
 _wf_done_event = threading.Event()
 _wf_error = ""
+_current_phase = "requirement"  # "requirement" | "design"
 
 # SSE 通道
 _sse_queues: list[queue.Queue] = []
@@ -80,6 +90,91 @@ def _register_callbacks():
     set_dialog_callbacks([_on_dialog])
     set_result_callbacks([_on_result])
     set_phase_callbacks([_on_phase])
+
+def _run_design_workflow(entry_mode: str = "full_run"):
+    global _wf_running, _wf_error
+    try:
+        _register_callbacks()
+
+        # 设置 Phase 2 专用暂停事件
+        b5_event = threading.Event()
+        set_b5_event(b5_event)
+        ccb2_event = threading.Event()
+        set_ccb2_event(ccb2_event)
+
+        workflow = build_design_workflow(entry_mode)
+        memory = MemorySaver()
+        app = workflow.compile(checkpointer=memory)
+
+        # 加载 Phase 1 基线
+        import os as _os
+        kb_root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".claude", "knowledge-base")
+        bl_dir = _os.path.join(kb_root, "wiki", "baselines")
+        bl_dirs = sorted([d for d in _os.listdir(bl_dir) if d.startswith("BL-")], reverse=True) if _os.path.exists(bl_dir) else []
+
+        srs_text, rtm_text, req_text = "", "", ""
+        if bl_dirs:
+            latest = _os.path.join(bl_dir, bl_dirs[0])
+            srs_p = _os.path.join(latest, "SRS-正式版.md")
+            rtm_files = [f for f in _os.listdir(latest) if f.startswith("RTM_")]
+            rtm_p = _os.path.join(latest, rtm_files[0]) if rtm_files else ""
+            req_p = _os.path.join(latest, "需求清单.md")
+            if _os.path.exists(srs_p):
+                with open(srs_p, "r", encoding="utf-8") as f: srs_text = f.read()
+            if rtm_p and _os.path.exists(rtm_p):
+                with open(rtm_p, "r", encoding="utf-8") as f: rtm_text = f.read()
+            if _os.path.exists(req_p):
+                with open(req_p, "r", encoding="utf-8") as f: req_text = f.read()
+
+        cr_text = ""
+        if entry_mode == "change_mode":
+            cr_p = _os.path.join(kb_root, "wiki", "design", "reports", "CR.md")
+            if _os.path.exists(cr_p):
+                with open(cr_p, "r", encoding="utf-8") as f: cr_text = f.read()
+
+        initial_state: DesignState = {
+            "srs_input": srs_text,
+            "rtm_input": rtm_text,
+            "consolidated_requirements": req_text,
+            "entry_mode": entry_mode,
+            "date_str": datetime.now().strftime("%Y%m%d"),
+            "time_str": datetime.now().strftime("%H%M"),
+            "adr_001": "", "asd": "", "mds": "", "dts": "", "adr_002_004": "",
+            "tlcd": "", "openapi_yaml": "",
+            "source_code_summary": "", "source_code_path": "",
+            "drift_list_raw": "", "drift_items": [], "drift_decisions": [],
+            "drift_round": 0, "drift_resolved": False,
+            "cr_document": cr_text, "cia": "", "adr_005": "", "asset_pack": "",
+            "change_round": 0,
+            "bl_01_version": "", "bl_02_version": "",
+            "ccb_verdict": "", "ccb_comment": "",
+            "iteration_count": 0, "workflow_status": "启动",
+        }
+
+        fire_progress("[Phase 2] 设计工作流启动...")
+        fire_progress(f"[Phase 2] 模式: {entry_mode}, 全局迭代上限: {MAX_GLOBAL_ITERATIONS}")
+
+        result = app.invoke(
+            initial_state,
+            config={"configurable": {"thread_id": f"design-{entry_mode}"}},
+            recursion_limit=100,
+        )
+
+        _on_result("_complete", result.get("workflow_status", "完成"))
+        bl = result.get("bl_02_version", result.get("bl_01_version", "N/A"))
+        fire_progress(f"[Phase 2] 完成! 基线: {bl}")
+
+    except WorkflowStopped:
+        _wf_error = "stopped by user"
+        fire_progress("[Phase 2] 工作流已手动停止")
+    except Exception as e:
+        _wf_error = str(e)
+        fire_progress(f"[Phase 2] 错误: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        _wf_running = False
+        _wf_done_event.set()
+        _sse_broadcast("done", {"status": "ok", "error": _wf_error})
 
 def _run_workflow():
     global _wf_running, _wf_error
@@ -187,20 +282,27 @@ async def sse_events(request: Request):
 
 
 @app.post("/start")
-async def start_workflow():
-    global _wf_running, _wf_error
+async def start_workflow(request: Request):
+    global _wf_running, _wf_error, _current_phase
     if _wf_running:
         return JSONResponse({"ok": False, "error": "workflow already running"})
-    # 清除上次运行残留的停止/暂停信号
+    body = await request.json()
+    _current_phase = body.get("phase", "requirement")
+    entry_mode = body.get("entry_mode", "full_run")
+
     STOP_REQUESTED.clear()
     PAUSE_REQUESTED.clear()
     RESUME_SIGNAL.set()
     _wf_running = True
     _wf_error = ""
     _wf_done_event.clear()
-    thread = threading.Thread(target=_run_workflow, daemon=True)
+
+    if _current_phase == "design":
+        thread = threading.Thread(target=_run_design_workflow, args=(entry_mode,), daemon=True)
+    else:
+        thread = threading.Thread(target=_run_workflow, daemon=True)
     thread.start()
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "phase": _current_phase})
 
 
 @app.post("/ccb")
@@ -208,8 +310,20 @@ async def ccb_submit(request: Request):
     body = await request.json()
     verdict = body.get("verdict", "不通过(分析类)")
     comment = body.get("comment", "")
-    set_ccb_result(verdict, comment)
+    if _current_phase == "design":
+        set_ccb2_result(verdict, comment)
+    else:
+        set_ccb_result(verdict, comment)
     _on_progress(f"CCB submitted: {verdict}")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/b5-decide")
+async def b5_submit(request: Request):
+    body = await request.json()
+    decisions = body.get("decisions", [])
+    set_b5_result(decisions)
+    _on_progress(f"B5 drift decisions submitted: {len(decisions)} items")
     return JSONResponse({"ok": True})
 
 
@@ -344,7 +458,7 @@ header span{font-size:13px;opacity:.9}
 <body>
 
 <header>
-  <div><h1>医疗器械租赁管理系统</h1><span>需求工程工作流 - 含审批检查点</span></div>
+  <div><h1>医疗器械租赁管理系统</h1><span id="headerSubtitle">需求工程工作流 - 含审批检查点</span></div>
   <div>
     <span id="iterationBadge" class="iteration-badge" style="display:none">第1轮</span>
     <span id="statusBadge" class="status-badge status-running" style="display:none">等待中</span>
@@ -353,10 +467,18 @@ header span{font-size:13px;opacity:.9}
 
 <div class="container">
   <div class="sidebar">
+    <div class="card" style="padding:10px 14px">
+      <div style="display:flex;gap:6px">
+        <button id="phase1Btn" class="phase-tab" onclick="switchPhase('requirement')" style="flex:1;padding:8px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:#1a73e8;color:#fff">📋 Phase 1: 需求工程</button>
+        <button id="phase2Btn" class="phase-tab" onclick="switchPhase('design')" style="flex:1;padding:8px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:#e8eaed;color:#555">🏗 Phase 2: 软件设计</button>
+      </div>
+    </div>
+
     <div class="card">
       <h3>📊 进度</h3>
       <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-      <div class="steps" id="steps">
+      <!-- Phase 1 Steps -->
+      <div class="steps" id="stepsP1">
         <div class="step" data-phase="A1_对话"><span class="dot"></span>A1: 涉众对话</div>
         <div class="step" data-phase="A1_汇总"><span class="dot"></span>A1: 汇总</div>
         <div class="step" data-phase="A2_分析"><span class="dot"></span>A2: 需求质量分析</div>
@@ -368,16 +490,36 @@ header span{font-size:13px;opacity:.9}
         <div class="step" data-phase="A6_基线"><span class="dot"></span>A6: 基线创立</div>
         <div class="step" data-phase="_done"><span class="dot"></span>完成</div>
       </div>
+      <!-- Phase 2 Steps -->
+      <div class="steps" id="stepsP2" style="display:none">
+        <div class="step" data-phase="入口路由"><span class="dot"></span>入口路由</div>
+        <div class="step" data-phase="B1_架构选型"><span class="dot"></span>B1: 架构选型</div>
+        <div class="step" data-phase="B2_工程产物"><span class="dot"></span>B2: 工程产物定义</div>
+        <div class="step" data-phase="B3_约束契约"><span class="dot"></span>B3: 约束与契约</div>
+        <div class="step" data-phase="B4_代码生成"><span class="dot"></span>B4: AI代码生成</div>
+        <div class="step" data-phase="B5_逆向校验"><span class="dot"></span>B5: 逆向校验(RCR)</div>
+        <div class="step" data-phase="BL01_设计基线"><span class="dot"></span>BL-01: 设计基线</div>
+        <div class="step" data-phase="B6_变更闭环"><span class="dot"></span>B6: 变更闭环</div>
+        <div class="step" data-phase="CCB_变更审批"><span class="dot"></span>CCB: 变更审批</div>
+        <div class="step" data-phase="_done"><span class="dot"></span>完成</div>
+      </div>
     </div>
 
     <div class="card">
-      <button id="startBtn" class="btn btn-primary" style="width:100%;margin-bottom:8px">清除上次产物并运行全流程</button>
+      <!-- Phase 1 Start Button -->
+      <button id="startBtnP1" class="btn btn-primary" style="width:100%;margin-bottom:4px">清除上次产物并运行全流程</button>
+      <!-- Phase 2 Start Buttons -->
+      <div id="startBtnsP2" style="display:none">
+        <button id="startBtnP2Full" class="btn btn-primary" style="width:100%;margin-bottom:4px">🚀 完整运行 (自动加载已存SRS→B1)</button>
+        <button id="startBtnP2Change" class="btn btn-success" style="width:100%;margin-bottom:8px">🔄 变更模式 (传入CR→B6 变更闭环)</button>
+      </div>
       <div style="display:flex;gap:6px;margin-bottom:10px">
         <button id="pauseBtn" class="btn btn-warning" style="display:none;flex:1" disabled>暂停</button>
         <button id="resumeBtn" class="btn btn-success" style="display:none;flex:1" disabled>恢复</button>
         <button id="stopBtn" class="btn" style="display:none;flex:0.6;background:#d93025;color:white;border:none" disabled>停止</button>
       </div>
 
+      <!-- Phase 1 CCB Panel -->
       <div id="ccbPanel" style="display:none">
         <div class="ccb-form">
           <h3 style="font-size:14px;margin-bottom:8px">🔍 CCB 人工审批</h3>
@@ -395,6 +537,17 @@ header span{font-size:13px;opacity:.9}
           <div style="margin-top:6px;padding:6px 10px;background:#e8f5e9;border-radius:4px;font-size:11px;color:#2e7d32">💡 「通过」不代表 SRS 完美无缺——它只意味着当前 SRS 达到了可进入基线创立阶段的阈值。需求基线是一个<b>快照</b>，不是一个终点。后续设计开发中需求仍可能变更，但每次变更需走正式的变更管理流程。</div>
           <textarea id="ccbComment" placeholder="审批意见（必填，说明通过或不通过的理由）" style="margin-top:8px"></textarea>
           <button id="ccbBtn" class="btn btn-success" style="width:100%;margin-top:8px">提交审批</button>
+        </div>
+      </div>
+
+      <!-- B5 Drift Decision Panel (Phase 2) -->
+      <div id="b5Panel" style="display:none">
+        <div class="ccb-form">
+          <h3 style="font-size:14px;margin-bottom:8px">🔍 B5 逆向校验 — 漂移决策</h3>
+          <div id="b5DriftItems" style="max-height:300px;overflow-y:auto;font-size:12px">
+            <span style="color:#999">等待漂移检测结果...</span>
+          </div>
+          <button id="b5Btn" class="btn btn-success" style="width:100%;margin-top:8px">提交漂移决策</button>
         </div>
       </div>
 
@@ -420,6 +573,16 @@ header span{font-size:13px;opacity:.9}
         <button class="tab-btn" data-tab="validation">验证</button>
         <button class="tab-btn" data-tab="baseline">基线/RTM</button>
       </div>
+      <!-- Phase 2 Tabs -->
+      <div class="tabs" id="mainTabsP2" style="display:none">
+        <button class="tab-btn active" data-tab="adr">ADR/ASD</button>
+        <button class="tab-btn" data-tab="spec2">MDS/DTS</button>
+        <button class="tab-btn" data-tab="contracts">契约/OAS</button>
+        <button class="tab-btn" data-tab="code2">生成代码</button>
+        <button class="tab-btn" data-tab="drift">漂移/RCR</button>
+        <button class="tab-btn" data-tab="cia">CIA/变更</button>
+        <button class="tab-btn" data-tab="baseline2">基线/资产</button>
+      </div>
 
       <div id="tab-dialogs" class="tab-content active">
         <div class="stakeholder-tabs" id="stakeholderTabs"></div>
@@ -431,6 +594,14 @@ header span{font-size:13px;opacity:.9}
       <div id="tab-srs" class="tab-content"><div class="result-content" id="srsContent">pending</div></div>
       <div id="tab-validation" class="tab-content"><div class="result-content" id="validationContent">pending</div></div>
       <div id="tab-baseline" class="tab-content"><div class="result-content" id="baselineContent">pending</div></div>
+      <!-- Phase 2 Tab Contents -->
+      <div id="tab-adr" class="tab-content"><div class="result-content" id="adrContent">pending</div></div>
+      <div id="tab-spec2" class="tab-content"><div class="result-content" id="spec2Content">pending</div></div>
+      <div id="tab-contracts" class="tab-content"><div class="result-content" id="contractsContent">pending</div></div>
+      <div id="tab-code2" class="tab-content"><div class="result-content" id="code2Content">pending</div></div>
+      <div id="tab-drift" class="tab-content"><div class="result-content" id="driftContent">pending</div></div>
+      <div id="tab-cia" class="tab-content"><div class="result-content" id="ciaContent">pending</div></div>
+      <div id="tab-baseline2" class="tab-content"><div class="result-content" id="baseline2Content">pending</div></div>
     </div>
   </div>
 </div>
@@ -441,6 +612,52 @@ const dialogs = {};
 const results = {};
 let phaseHistory = [];
 let sse = null;
+let currentPhase = "requirement"; // "requirement" | "design"
+
+function switchPhase(phase) {
+  currentPhase = phase;
+  const p1Btn = document.getElementById("phase1Btn");
+  const p2Btn = document.getElementById("phase2Btn");
+  const stepsP1 = document.getElementById("stepsP1");
+  const stepsP2 = document.getElementById("stepsP2");
+  const startP1 = document.getElementById("startBtnP1");
+  const startP2 = document.getElementById("startBtnsP2");
+  const tabsP1 = document.getElementById("mainTabs");
+  const tabsP2 = document.getElementById("mainTabsP2");
+  const subtitle = document.getElementById("headerSubtitle");
+
+  // Hide all Phase 1 tabs content
+  document.querySelectorAll("#mainTabs ~ .tab-content").forEach(c => c.classList.remove("active"));
+  document.querySelectorAll("#mainTabsP2 ~ .tab-content").forEach(c => c.classList.remove("active"));
+
+  if (phase === "design") {
+    p1Btn.style.background = "#e8eaed"; p1Btn.style.color = "#555";
+    p2Btn.style.background = "#1a73e8"; p2Btn.style.color = "#fff";
+    stepsP1.style.display = "none";
+    stepsP2.style.display = "";
+    startP1.style.display = "none";
+    startP2.style.display = "";
+    tabsP1.style.display = "none";
+    tabsP2.style.display = "";
+    subtitle.textContent = "软件设计工作流 - B1-B6 + CCB";
+    // Show first tab of Phase 2
+    document.getElementById("tab-adr").classList.add("active");
+    tabsP2.querySelector(".tab-btn").classList.add("active");
+  } else {
+    p1Btn.style.background = "#1a73e8"; p1Btn.style.color = "#fff";
+    p2Btn.style.background = "#e8eaed"; p2Btn.style.color = "#555";
+    stepsP1.style.display = "";
+    stepsP2.style.display = "none";
+    startP1.style.display = "";
+    startP2.style.display = "none";
+    tabsP1.style.display = "";
+    tabsP2.style.display = "none";
+    subtitle.textContent = "需求工程工作流 - 含审批检查点";
+    // Show first tab of Phase 1
+    document.getElementById("tab-dialogs").classList.add("active");
+    tabsP1.querySelector(".tab-btn").classList.add("active");
+  }
+}
 
 function initStakeholderTabs() {
   const container = document.getElementById("stakeholderTabs");
@@ -543,10 +760,13 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     updateProgress(data.phase);
     if (data.phase === "CCB_审批") showCCBPanel();
+    if (data.phase === "B5_逆向校验") showB5Panel();
   });
   sse.addEventListener("done", e => {
-    document.getElementById("startBtn").disabled = false;
-    document.getElementById("startBtn").textContent = "清除上次产物并运行全流程";
+    document.getElementById("startBtnP1").disabled = false;
+    document.getElementById("startBtnP1").textContent = "清除上次产物并运行全流程";
+    document.getElementById("startBtnP2Full").disabled = false;
+    document.getElementById("startBtnP2Change").disabled = false;
     document.getElementById("statusBadge").textContent = "已完成";
     document.getElementById("statusBadge").className = "status-badge status-done";
     document.getElementById("pauseBtn").style.display = "none";
@@ -555,6 +775,7 @@ function connectSSE() {
     updateProgress("_done");
     document.getElementById("donePanel").style.display = "block";
     document.getElementById("ccbPanel").style.display = "none";
+    document.getElementById("b5Panel").style.display = "none";
   });
   sse.onerror = () => {};
 }
@@ -831,22 +1052,45 @@ function updateResultTabs() {
   }
   if (results.baseline_version)
     document.getElementById("baselineContent").innerHTML = "<b>基线:</b> " + results.baseline_version + "<hr><pre>" + escapeHtml(results.rtm || "") + "</pre>";
+
+  // ── Phase 2 Results ──
+  if (results.adr_001)
+    document.getElementById("adrContent").innerHTML = "<b>ADR-001:</b><pre>" + escapeHtml(results.adr_001).substring(0, 3000) + "</pre>" +
+      (results.asd ? "<hr><b>ASD:</b><pre>" + escapeHtml(results.asd).substring(0, 3000) + "</pre>" : "");
+  if (results.mds)
+    document.getElementById("spec2Content").innerHTML = "<b>MDS:</b><pre>" + escapeHtml(results.mds).substring(0, 2000) + "</pre>" +
+      (results.dts ? "<hr><b>DTS:</b><pre>" + escapeHtml(results.dts).substring(0, 2000) + "</pre>" : "");
+  if (results.tlcd)
+    document.getElementById("contractsContent").innerHTML = "<b>TLCD:</b><pre>" + escapeHtml(results.tlcd).substring(0, 2000) + "</pre>" +
+      (results.openapi_yaml ? "<hr><b>OpenAPI YAML:</b><pre>" + escapeHtml(results.openapi_yaml).substring(0, 3000) + "</pre>" : "");
+  if (results.source_code_summary)
+    document.getElementById("code2Content").innerHTML = "<b>代码生成:</b> " + escapeHtml(results.source_code_summary) +
+      (results.source_code_path ? "<br>路径: " + escapeHtml(results.source_code_path) : "") + "<hr><pre>代码文件列表待加载...</pre>";
+  if (results.drift_list_raw)
+    document.getElementById("driftContent").innerHTML = "<b>RCR 漂移清单:</b><pre>" + escapeHtml(results.drift_list_raw).substring(0, 3000) + "</pre>";
+  if (results.cia)
+    document.getElementById("ciaContent").innerHTML = "<b>CIA 变更影响分析:</b><pre>" + escapeHtml(results.cia).substring(0, 3000) + "</pre>" +
+      (results.adr_005 ? "<hr><b>ADR-005:</b><pre>" + escapeHtml(results.adr_005).substring(0, 2000) + "</pre>" : "");
+  if (results.bl_02_version || results.bl_01_version)
+    document.getElementById("baseline2Content").innerHTML = "<b>基线:</b> " + (results.bl_02_version || results.bl_01_version) +
+      (results.asset_pack ? "<hr><b>5层资产包:</b><pre>" + escapeHtml(results.asset_pack).substring(0, 2000) + "</pre>" : "");
 }
 
-document.getElementById("startBtn").onclick = async () => {
-  document.getElementById("startBtn").disabled = true;
-  document.getElementById("startBtn").textContent = "正在清除上次产物...";
+// ── Phase 1 Start ──
+document.getElementById("startBtnP1").onclick = () => startWorkflow("requirement", "full_run");
+// ── Phase 2 Start ──
+document.getElementById("startBtnP2Full").onclick = () => startWorkflow("design", "full_run");
+document.getElementById("startBtnP2Change").onclick = () => startWorkflow("design", "change_mode");
 
-  // 先清除上次工作流产物
-  try {
-    const cleanupResp = await fetch("/cleanup", {method:"POST"});
-    const cleanupData = await cleanupResp.json();
-    addLog("已清除上次工作流产物 (" + (cleanupData.cleaned || 0) + " 个目录)");
-  } catch(e) {
-    addLog("清除产物失败: " + e.message);
-  }
+async function startWorkflow(phase, entryMode) {
+  const btnId = phase === "design" ? (entryMode === "change_mode" ? "startBtnP2Change" : "startBtnP2Full") : "startBtnP1";
+  const btn = document.getElementById(btnId);
+  // Disable all start buttons
+  ["startBtnP1","startBtnP2Full","startBtnP2Change"].forEach(id => {
+    document.getElementById(id).disabled = true;
+  });
+  btn.textContent = "运行中...";
 
-  document.getElementById("startBtn").textContent = "运行中...";
   document.getElementById("statusBadge").style.display = "inline-block";
   document.getElementById("statusBadge").textContent = "运行中";
   document.getElementById("statusBadge").className = "status-badge status-running";
@@ -862,20 +1106,45 @@ document.getElementById("startBtn").onclick = async () => {
   document.getElementById("logContainer").innerHTML = "";
   document.querySelectorAll(".stakeholder-content").forEach(c => c.innerHTML = "");
   document.getElementById("dialogEmpty").style.display = "block";
-  ["reqContent","umlContent","srsContent","validationContent","baselineContent"].forEach(id => {
-    document.getElementById(id).innerHTML = "等待中...";
-  });
+  // Reset all content divs
+  ["reqContent","umlContent","srsContent","validationContent","baselineContent",
+   "adrContent","spec2Content","contractsContent","code2Content","driftContent","ciaContent","baseline2Content"
+  ].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = "等待中..."; });
   document.querySelectorAll(".step").forEach(s => s.classList.remove("active","done"));
   document.getElementById("progressFill").style.width = "0%";
   document.getElementById("iterationBadge").style.display = "none";
 
-  const resp = await fetch("/start", {method:"POST"});
+  const resp = await fetch("/start", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({phase, entry_mode: entryMode})});
   const data = await resp.json();
   if (!data.ok) {
     addLog("错误: " + (data.error || "启动失败"));
-    document.getElementById("startBtn").disabled = false;
-    document.getElementById("startBtn").textContent = "清除上次产物并运行全流程";
+    ["startBtnP1","startBtnP2Full","startBtnP2Change"].forEach(id => {
+      document.getElementById(id).disabled = false;
+    });
+    document.getElementById("startBtnP1").textContent = "清除上次产物并运行全流程";
+    document.getElementById("startBtnP2Full").textContent = "🚀 完整运行 (自动加载已存SRS→B1)";
+    document.getElementById("startBtnP2Change").textContent = "🔄 变更模式 (传入CR→B6 变更闭环)";
   }
+}
+
+// ── B5 Drift Decision Panel ──
+function showB5Panel() {
+  document.getElementById("b5Panel").style.display = "block";
+  document.getElementById("startBtnP1").disabled = true;
+  document.getElementById("startBtnP2Full").disabled = true;
+  document.getElementById("startBtnP2Change").disabled = true;
+  document.getElementById("statusBadge").textContent = "等待B5漂移决策";
+  document.getElementById("statusBadge").className = "status-badge status-paused";
+}
+
+document.getElementById("b5Btn").onclick = async () => {
+  const decisions = [];
+  document.querySelectorAll(".drift-item-decision").forEach(sel => {
+    decisions.push({item_id: sel.dataset.id, action: sel.value, comment: ""});
+  });
+  await fetch("/b5-decide", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({decisions})});
+  document.getElementById("b5Panel").style.display = "none";
+  addLog("B5 drift decisions submitted: " + decisions.length + " items");
 };
 
 document.getElementById("pauseBtn").onclick = async () => {
