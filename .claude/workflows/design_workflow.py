@@ -177,6 +177,7 @@ from requirement_workflow import (
     MAX_GLOBAL_ITERATIONS,
     LLM_API_KEY, LLM_API_URL, LLM_MODEL, KB_ROOT,
     KB_DIRS,
+    get_last_usage, get_session_stats,
 )
 
 # ============================================================
@@ -243,6 +244,7 @@ class DesignState(TypedDict):
     srs_input: str                      # SRS 全文（Phase 1 基线）
     rtm_input: str                      # RTM（Phase 1 基线）
     consolidated_requirements: str      # 需求清单
+    semantic_model: str                 # B0: SRS语义提取结果 (JSON: entities/functionals/rules)
 
     # ---- 运行模式 ----
     entry_mode: str                     # "full_run" | "change_mode"
@@ -267,6 +269,9 @@ class DesignState(TypedDict):
     # ---- B4: AI代码生成 ----
     source_code_summary: str            # 生成摘要
     source_code_path: str               # 代码根目录
+    generated_code: str                 # 全部生成代码（供实现记忆注入）
+    forward_graph: str                  # 正向知识图谱 JSON (Component/Interface/Constraint)
+    reverse_graph: str                  # 逆向知识图谱 JSON (从代码提取)
 
     # ---- B5: 逆向校验 ----
     drift_list_raw: str                 # LLM 原始输出
@@ -308,6 +313,171 @@ def save_to_kb_design(subdir: str, filename: str, content: str) -> str:
     return full_path
 
 
+# ── ADR 生命周期管理（教材§11 第四小节 要点一）──────────────────────────
+ADR_STATUSES = ("提议", "已接受", "已废弃", "已替代")
+
+
+def kb_frontmatter_adr(title: str, status: str = "已接受", replaces: str = "", tags: list[str] | None = None) -> str:
+    """生成 ADR 专用 frontmatter，含 status 字段和替代引用。
+
+    Args:
+        title: ADR 标题
+        status: 决策状态，可选 提议/已接受/已废弃/已替代
+        replaces: 被本 ADR 替代的旧 ADR 编号（如 "ADR-001"），无替代则为空
+        tags: 额外标签
+    """
+    if status not in ADR_STATUSES:
+        status = "已接受"
+    t = ["ADR", "Phase2"]
+    if tags:
+        t.extend(tags)
+    fm = f"---\ntitle: {title}\ntags: [{' '.join(t)}]\nadr_status: {status}\n"
+    if replaces:
+        fm += f"replaces: {replaces}\n"
+    fm += "---\n\n"
+    return fm
+
+
+def update_adr_status(adr_filename: str, new_status: str, replaced_by: str = "") -> str | None:
+    """更新 ADR 文档的 frontmatter status 字段（废弃不删除原则）。
+
+    将旧 ADR 的 status 从 '已接受' 改为 '已废弃' 或 '已替代'，
+    并可选填写 replaced_by 指向替代它的新 ADR。
+
+    Args:
+        adr_filename: ADR 文件名（不含路径，如 "ADR-001-架构选型决策-20260630.md"）
+        new_status: 新状态
+        replaced_by: 替代本 ADR 的新 ADR 编号（如 "ADR-005"）
+
+    Returns:
+        更新后的文件路径，文件不存在则返回 None
+    """
+    adr_dir = KB_DIRS_DESIGN["adr"]
+    full_path = os.path.join(adr_dir, adr_filename)
+    if not os.path.exists(full_path):
+        return None
+    with open(full_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    # 修改 frontmatter 中的 status
+    import re
+    content = re.sub(r"adr_status:\s*\S+", f"adr_status: {new_status}", content)
+    if replaced_by and "replaced_by:" not in content:
+        # 在 adr_status 行后插入 replaced_by
+        content = re.sub(r"(adr_status:.*\n)", rf"\1replaced_by: {replaced_by}\n", content)
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return full_path
+
+
+# ── Stats 数据趋势监控（教材§11 第四小节 要点三）──────────────────────────
+_STATS_LOG = []  # 内存累积，每 N 次写一次磁盘
+
+
+def save_stats_snapshot(ds: str, force: bool = False) -> str | None:
+    """将当前会话的 Stats 快照写入 wiki/summaries/。
+
+    缓存命中率 = cache_read / (cache_read + non_cache_prompt) * 100%
+    """
+    stats = get_session_stats()
+    if stats["total_calls"] == 0:
+        return None
+    # 默认每 10 次调用写一次，force=True 时强制写入
+    if not force and stats["total_calls"] % 10 != 0:
+        return None
+    hit_rate = stats.get("cache_hit_rate", 0)
+    content = f"""---
+title: Stats-缓存命中率趋势
+tags: [Stats, 记忆管理, 效率]
+date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+---
+
+## Stats 快照 ({ds})
+
+| 指标 | 值 |
+|------|-----|
+| 累计调用次数 | {stats['total_calls']} |
+| 总 Prompt Token | {stats['total_prompt_tokens']:,} |
+| 总 Completion Token | {stats['total_completion_tokens']:,} |
+| 缓存写入 Token | {stats['total_cache_creation']:,} |
+| 缓存命中读取 Token | {stats['total_cache_read']:,} |
+| **缓存命中率** | **{hit_rate}%** |
+
+## 健康评估
+"""
+    if hit_rate >= 80:
+        content += f"- ✅ 缓存命中率 {hit_rate}% ≥ 80%，记忆管理健康。\n"
+    elif hit_rate >= 60:
+        content += f"- ⚠️ 缓存命中率 {hit_rate}% 在 60-80% 之间，建议检查固定记忆层是否频繁修改。\n"
+    elif hit_rate > 0:
+        content += f"- ❌ 缓存命中率 {hit_rate}% < 60%，可能存在知识图谱覆盖度不足或约束文件频繁变动。\n"
+    else:
+        content += "- ⏳ 缓存命中率数据尚未可用（API 未返回缓存明细）。\n"
+    content += f"\n> 教材§11: Stats数据是记忆管理健康的「体检指标」。命中率异常下降 > 回溯分析固定记忆层变更 > 定位根因 > 调整记忆结构。\n"
+    path = save_to_kb_design("reports", f"stats-缓存命中率趋势-{ds}.md", content)
+    return path
+
+
+# ── 设计-实现差距追踪（教材§11 第四小节 要点二）──────────────────────────
+def save_design_gap_report(state: DesignState, ds: str) -> str | None:
+    """B6 逆向校验后，将设计记忆与实现记忆的差距持久化。
+
+    对比 state 中的设计产物（ASD/MDS/DTS/TLCD/OAS）与 B6 的 RCR 结果，
+    生成结构化的「设计-实现差距清单」，供后续漂移修复追踪。
+    """
+    rcr = state.get("rcr_result", "")
+    if not rcr:
+        return None
+    # 提取设计产物的关键约束计数
+    asd = state.get("asd", "")
+    mds = state.get("mds", "")
+    tlcd = state.get("tlcd", "")
+    oas = state.get("openapi_yaml", "")
+    # 粗略统计设计约束条数
+    import re
+    asd_rules = len(re.findall(r"L-\d{2}", asd))
+    c_arch = len(re.findall(r"C-ARCH-\d{3}", tlcd))
+    c_mod = len(re.findall(r"C-MOD-\d{3}", tlcd))
+    c_code = len(re.findall(r"C-CODE-\d{3}", tlcd))
+    # 从 RCR 结果中提取漂移统计
+    drifts_found = rcr.count("violated_rule") if "violated_rule" in rcr else -1
+    content = f"""---
+title: 设计-实现差距报告
+tags: [差距追踪, 记忆管理, Phase2]
+date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+---
+
+## 设计记忆（正向图谱）概览
+
+| 产物 | 约束/定义数量 |
+|------|-------------|
+| ASD 架构约束 | {asd_rules} 条 |
+| TLCD C-ARCH | {c_arch} 条 |
+| TLCD C-MOD | {c_mod} 条 |
+| TLCD C-CODE | {c_code} 条 |
+| OAS 契约 | {'已生成' if oas else '未生成'} |
+
+## 实现记忆（逆向图谱）比对
+
+| 指标 | 状态 |
+|------|------|
+| RCR 逆向校验 | {'已完成' if rcr else '未执行'} |
+| 检测到的漂移条目 | {drifts_found if drifts_found >= 0 else '统计中...'} |
+
+## 差距分析
+
+"""
+    if drifts_found == 0:
+        content += "- ✅ 设计记忆与实现记忆一致，无设计漂移。\n"
+    elif drifts_found > 0:
+        content += f"- ⚠️ 检测到 {drifts_found} 处漂移，需逐项修复或更新设计约束。\n"
+        content += "- 修复路径: 漂移→RCR重检→确认消除→记录ADR（如设计变更）。\n"
+    else:
+        content += "- ⏳ RCR 结果解析中，漂移统计待确认。\n"
+    content += f"\n> 教材§11: 设计记忆和实现记忆之间的差距在第14节逆向校验中被自动检测。它不是错误，而是一个被显式追踪的工作项。\n"
+    path = save_to_kb_design("reports", f"设计-实现差距报告-{ds}.md", content)
+    return path
+
+
 # ============================================================
 # 🧠 三段式记忆注入（教材§11: Reasonix 的 LangGraph 替代实现）
 # ============================================================
@@ -320,7 +490,7 @@ def inject_project_memory(task_prompt: str, state: DesignState, sections: list[s
 
     三段结构:
       Layer 1 (元记忆): 项目背景 + 角色定义 — 最稳定
-      Layer 2 (项目记忆): ASD/TLCD/MDS/OAS/ADR — 每次自动加载同一套约束
+      Layer 2 (项目记忆): ASD/TLCD/MDS/OAS/ADR + 已有代码 — 每次自动加载同一套约束
       Layer 3 (会话记忆): 当前具体任务 — 每次不同
     """
 
@@ -332,23 +502,69 @@ def inject_project_memory(task_prompt: str, state: DesignState, sections: list[s
 """
 
     # ── Layer 2: 项目记忆 (从 state 提取, 每次自动加载) ──
+    # 注入顺序遵循「固定前缀 + 变动后缀」缓存优化:
+    #   固定前缀: C-ARCH + C-CODE — 所有模块相同，高缓存命中
+    #   变动后缀: C-MOD + OAS + MDS — 每个模块不同，按需注入
+    #   参考背景: ADR + 已有代码 — 不参与缓存但提供决策上下文
+
     project_blocks = []
 
-    asd = state.get("asd", "")
-    if asd and (sections is None or "asd" in sections):
-        project_blocks.append(f"## 架构风格声明 (ASD)\n{_extract_constraints(asd, 2000)}")
-
     tlcd = state.get("tlcd", "")
-    if tlcd and (sections is None or "tlcd" in sections):
-        project_blocks.append(f"## 三层约束设计 (TLCD)\n{_extract_constraints(tlcd, 2000)}")
+    asd = state.get("asd", "")
 
-    mds = state.get("mds", "")
-    if mds and (sections is None or "mds" in sections):
-        project_blocks.append(f"## 模块划分方案 (MDS)\n{mds[:2000]}")
+    # ── 固定前缀 ①: C-ARCH 架构层全局禁止规则 ──
+    c_arch_from_asd = _extract_by_prefix(asd, r"L-\d{2,3}") if asd else ""
+    c_arch_from_tlcd = _extract_by_prefix(tlcd, r"C-ARCH-\d{3}") if tlcd else ""
+    c_arch = (c_arch_from_asd + "\n" + c_arch_from_tlcd).strip()
+    if c_arch:
+        project_blocks.append(f"## C-ARCH 架构层约束（全局禁止规则 — 所有模块强制遵守）\n{c_arch[:2000]}")
 
+    # ── 固定前缀 ②: C-CODE 代码层禁止规则 ──
+    c_code = _extract_by_prefix(tlcd, r"C-CODE-\d{3}") if tlcd else ""
+    if c_code:
+        project_blocks.append(f"## C-CODE 代码层约束（全局编码禁止规则 — 所有模块强制遵守）\n{c_code[:1500]}")
+
+    # ── 变动后缀 ①: C-MOD 当前模块的禁止规则 + 依赖白名单 ──
+    c_mod = _extract_by_prefix(tlcd, r"C-MOD-\d{3}") if tlcd else ""
+    if c_mod:
+        project_blocks.append(f"## C-MOD 模块层约束（模块禁止规则 + 依赖白名单 — 按模块变化）\n{c_mod[:2000]}")
+
+    # ── 变动后缀 ②: OAS 接口契约 ──
     oas = state.get("openapi_yaml", "")
     if oas and (sections is None or "oas" in sections):
-        project_blocks.append(f"## 接口契约 (OpenAPI)\n{oas[:2000]}")
+        oas_block = f"## 接口契约 (OpenAPI)\n{oas[:2000]}"
+        # 契约演化约束：检测是否有旧版本遗留字段
+        import re as _re_oas
+        has_deprecated = _re_oas.search(r'deprecated:\s*true', oas)
+        if has_deprecated or "x-changelog" in oas:
+            oas_block += ("\n\n### 契约演化约束（向后兼容）\n"
+                          "- 新增字段不得修改已有字段的 type、format 或语义\n"
+                          "- 标记 `deprecated: true` 的字段仍须保留在响应中，调用方可能仍在使用\n"
+                          "- 移除已废弃字段前须检查 x-changelog 确认距标记废弃已过一个版本周期\n"
+                          "- 向后兼容是强制性约束——违反本条将导致已有调用方运行时崩溃")
+        project_blocks.append(oas_block)
+
+    # ── 变动后缀 ③: MDS 模块职责 ──
+    mds = state.get("mds", "")
+    if mds and (sections is None or "mds" in sections):
+        project_blocks.append(f"## 模块划分方案 (MDS)\n{mds[:1500]}")
+
+    # ── 参考背景: ADR 决策记忆 ──
+    adr_001 = state.get("adr_001", "")
+    adr_002_004 = state.get("adr_002_004", "")
+    if adr_001 or adr_002_004:
+        adr_block = "## 架构决策记录 (ADR)\n"
+        if adr_001:
+            adr_block += f"### ADR-001 (架构选型)\n{adr_001[:1000]}\n"
+        if adr_002_004:
+            adr_block += f"### ADR-002~4 (技术栈/数据库/部署)\n{adr_002_004[:1000]}\n"
+        project_blocks.append(adr_block)
+
+    # ── 参考背景: 实现记忆（已有代码结构）──
+    existing_code = state.get("generated_code", "")
+    if existing_code and (sections is None or "code" in sections):
+        code_summary = _summarize_code_structure(existing_code)
+        project_blocks.append(f"## 已有代码结构 (实现记忆)\n{code_summary}")
 
     project = "\n\n".join(project_blocks) if project_blocks else "(项目记忆尚未生成)"
 
@@ -358,20 +574,415 @@ def inject_project_memory(task_prompt: str, state: DesignState, sections: list[s
     return meta + project + session
 
 
-def _extract_constraints(text: str, max_len: int = 2000) -> str:
-    """从文档中提取约束条款（以编号开头的行），优先返回约束部分。"""
+def _extract_by_prefix(text: str, prefix_pattern: str, max_len: int = 2000) -> str:
+    """从约束文档中按前缀模式提取约束条款。
+
+    例如 prefix_pattern=r"C-ARCH-\\d{3}" 只提取架构层约束，
+    prefix_pattern=r"C-MOD-\\d{3}" 只提取模块层约束。
+
+    这使得固定前缀（C-ARCH + C-CODE）和变动后缀（C-MOD + OAS）
+    可以独立控制，最大化缓存命中率。
+    """
     import re
-    # 尝试提取 L-xx / C-xxx-xxx 格式的约束条款
+    constraints = re.findall(rf'(?:^|\n)({prefix_pattern}[^\n]*)', text[:max_len * 2])
+    if constraints:
+        return "\n".join(constraints[:30])[:max_len]
+    return ""
+
+
+def _extract_constraints(text: str, max_len: int = 2000) -> str:
+    """从文档中提取所有约束条款（L-xx / C-xxx-xxx 格式），保留向后兼容。"""
+    import re
     constraints = re.findall(r'(?:^|\n)([CL]-\d{2,3}[^\n]*)', text[:max_len * 2])
     if constraints:
         return "\n".join(constraints[:30])[:max_len]
     return text[:max_len]
 
 
+def _summarize_code_structure(code: str, max_len: int = 1500) -> str:
+    """从代码中提取结构摘要（类名/方法签名/包名），作为实现记忆注入。
+
+    不注入完整源码，只注入结构骨架——足够让 AI 理解已有代码的模块边界和方法签名，
+    避免在增量代码生成时与已有实现产生命名冲突或职责重叠。
+    """
+    import re
+    lines = []
+    # 提取 package / import（仅首部）
+    pkg_match = re.search(r'^package\s+(\S+);', code, re.MULTILINE)
+    if pkg_match:
+        lines.append(f"包: {pkg_match.group(1)}")
+    # 提取类/接口定义
+    for m in re.finditer(r'(?:public\s+)?(class|interface|enum)\s+(\w+)', code):
+        lines.append(f"{m.group(1)} {m.group(2)}")
+    # 提取方法签名
+    for m in re.finditer(r'(?:public|private|protected)\s+\w+\s+(\w+)\s*\(', code):
+        lines.append(f"  方法: {m.group(1)}()")
+    if not lines:
+        # 回退：取前 max_len 字符
+        return code[:max_len]
+    summary = "\n".join(lines[:40])
+    return summary[:max_len] if len(summary) > max_len else summary
+
+
+# ── SRS 语义提取（教材§12 第二阶段: 架构分析智能体）─────────────────────
+def extract_srs_semantics(srs_text: str, reqs_text: str) -> dict:
+    """从 SRS 中提取三层语义信息，输出结构化的需求语义模型。
+
+    返回 JSON-serializable dict:
+      {entities: [...], functionals: [...], rules: [...]}
+    """
+    prompt = f"""你是需求分析专家。读取以下 SRS，提取三层语义信息。
+
+## SRS 文档
+{srs_text[:10000]}
+
+## 需求清单
+{reqs_text[:4000]}
+
+## 要求
+提取以下三层信息，输出严格 JSON:
+
+### 实体层
+识别所有业务实体，每个含: name, attributes (属性列表), description
+
+### 功能层
+识别所有功能需求，每个含: id, description, 归属的实体名称
+
+### 规则层
+识别所有业务规则和约束条件，每个含: id, description, type (业务规则|约束条件)
+
+## 输出格式（严格JSON）
+{{
+  "entities": [
+    {{"name": "Order", "attributes": ["orderId", "status", "createTime"], "description": "租赁订单"}}
+  ],
+  "functionals": [
+    {{"id": "F-001", "description": "用户扫码取件", "entity": "Order"}}
+  ],
+  "rules": [
+    {{"id": "R-001", "description": "取件码有效期为24小时", "type": "业务规则"}},
+    {{"id": "R-002", "description": "系统应支持至少1000个格口的同时管理", "type": "约束条件"}}
+  ]
+}}
+
+只输出 JSON。"""
+
+    result = call_llm(prompt, system_prompt="你是资深需求分析专家，精通SRS语义提取和领域建模。", max_tokens=4000)
+    json_result = extract_json(result)
+    if not json_result:
+        json_result = {"entities": [], "functionals": [], "rules": []}
+    return json_result
+
+
+# ── 正向知识图谱构建（教材§12 第二阶段: 基于设计产物构建图谱）───────────
+def build_forward_graph(state: DesignState) -> str:
+    """从四种设计产物构建正向知识图谱（设计意图图谱）。
+
+    节点类型: Component / Interface / Constraint
+    边类型:   provides / complies / depends
+
+    返回 JSON 字符串。
+    """
+    import re
+    graph = {"nodes": [], "edges": []}
+
+    # ── Component 节点: 从 MDS 提取 ──
+    mds = state.get("mds", "")
+    if mds:
+        try:
+            mds_json = extract_json(mds)
+        except Exception:
+            mds_json = {}
+        modules = mds_json.get("modules", []) if isinstance(mds_json, dict) else []
+        for mod in modules:
+            if isinstance(mod, dict):
+                graph["nodes"].append({
+                    "id": mod.get("name", "Unknown"),
+                    "type": "Component",
+                    "responsibility": mod.get("responsibility", ""),
+                    "layer": _infer_layer(mod.get("name", "")),
+                    "interfaces": mod.get("interfaces", []),
+                })
+
+    # ── Interface 节点: 从 OAS 提取 ──
+    oas = state.get("openapi_yaml", "")
+    if oas:
+        paths = re.findall(r'(POST|GET|PUT|DELETE)\s+(/\S+)', oas)
+        for method, path in paths:
+            node_id = f"IF-{method}-{path.replace('/', '_')}"
+            graph["nodes"].append({
+                "id": node_id,
+                "type": "Interface",
+                "method": method,
+                "path": path,
+            })
+            # provides 边: 从路径推断所属 Component
+            comp_name = _infer_component_from_path(path)
+            if comp_name:
+                graph["edges"].append({
+                    "from": comp_name,
+                    "to": node_id,
+                    "type": "provides",
+                })
+
+    # ── Constraint 节点: 从 ASD + TLCD 提取 ──
+    asd = state.get("asd", "")
+    tlcd = state.get("tlcd", "")
+    combined = asd + "\n" + tlcd
+    l_constraints = re.findall(r'(L-\d{2,3})[：:]\s*([^\n]+)', combined)
+    for cid, desc in l_constraints[:20]:
+        graph["nodes"].append({
+            "id": cid,
+            "type": "Constraint",
+            "description": desc.strip()[:200],
+            "scope": "arch",
+        })
+    c_constraints = re.findall(r'(C-(?:ARCH|MOD|CODE)-\d{3})[：:]\s*([^\n]+)', combined)
+    for cid, desc in c_constraints[:30]:
+        graph["nodes"].append({
+            "id": cid,
+            "type": "Constraint",
+            "description": desc.strip()[:200],
+            "scope": "code",
+        })
+
+    # ── depends 边: 从 MDS depends_on 和 DTS 提取 ──
+    for mod in modules:
+        name = mod.get("name", "") if isinstance(mod, dict) else ""
+        deps = mod.get("depends_on", []) if isinstance(mod, dict) else []
+        for dep in deps:
+            graph["edges"].append({"from": name, "to": dep, "type": "depends"})
+
+    # 从 DTS 补充禁止依赖（标记为 forbidden）
+    dts = state.get("dts", "")
+    if dts:
+        try:
+            dts_json = extract_json(dts)
+        except Exception:
+            dts_json = {}
+        forbidden = dts_json.get("forbidden_dependencies", []) if isinstance(dts_json, dict) else []
+        for fb in forbidden:
+            if isinstance(fb, dict):
+                graph["edges"].append({
+                    "from": fb.get("from", ""),
+                    "to": fb.get("to", ""),
+                    "type": "forbidden",
+                    "reason": fb.get("reason", ""),
+                })
+
+    return json.dumps(graph, ensure_ascii=False, indent=2)
+
+
+def _infer_layer(module_name: str) -> str:
+    """从模块名推断所属架构层。"""
+    n = module_name.lower()
+    if "controller" in n:
+        return "presentation"
+    if "service" in n:
+        return "business"
+    if "repository" in n or "dao" in n:
+        return "data"
+    if "gateway" in n or "client" in n or "config" in n:
+        return "infrastructure"
+    return "business"
+
+
+def _infer_component_from_path(path: str) -> str:
+    """从 API 路径推断所属 Component。"""
+    parts = [p for p in path.split("/") if p]
+    if "cells" in parts:
+        return "CellService"
+    if "orders" in parts:
+        return "OrderService"
+    if "notifications" in parts:
+        return "NotificationService"
+    if "users" in parts:
+        return "UserService"
+    if "couriers" in parts:
+        return "CourierService"
+    return ""
+
+
+# ── CodeGraph 逆向图谱提取（教材§12 第三阶段: tree-sitter 的 Python 替代实现）──
+def extract_reverse_graph(source_dir: str) -> str:
+    """从生成的 Java 源码中提取逆向知识图谱（实现事实图谱）。
+
+    解析 Java 文件，提取:
+      - 包结构 + 类定义 (Component 节点)
+      - 方法签名 (Interface 节点)
+      - import 依赖关系 (depends 边)
+      - 注解信息
+
+    返回 JSON 字符串，格式与正向图谱一致，可直接比对。
+    """
+    import re
+    graph = {"nodes": [], "edges": []}
+    if not os.path.isdir(source_dir):
+        return json.dumps(graph, ensure_ascii=False)
+
+    java_files = []
+    for root, _, files in os.walk(source_dir):
+        for f in files:
+            if f.endswith(".java"):
+                java_files.append(os.path.join(root, f))
+
+    for filepath in java_files:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            code = f.read()
+
+        # 提取 package
+        pkg_match = re.search(r'package\s+([\w.]+);', code)
+        pkg = pkg_match.group(1) if pkg_match else ""
+
+        # 提取类/接口定义
+        class_matches = re.findall(
+            r'(?:@\w+\s*)*\s*(?:public\s+)?(class|interface|enum)\s+(\w+)',
+            code
+        )
+        for cls_type, cls_name in class_matches:
+            node_id = f"{pkg}.{cls_name}" if pkg else cls_name
+            graph["nodes"].append({
+                "id": node_id,
+                "type": "Component",
+                "source_type": cls_type,
+                "file": os.path.relpath(filepath, source_dir),
+            })
+
+            # 提取方法签名 → Interface 代理节点
+            method_matches = re.findall(
+                r'(?:@\w+\s*)*\s*(?:public|private|protected)\s+(?:static\s+)?(?:<\w+>\s+)?(\w+)\s+(\w+)\s*\(([^)]*)\)',
+                code
+            )
+            for ret_type, method_name, params in method_matches:
+                if method_name in ("main", "equals", "hashCode", "toString"):
+                    continue
+                if_node_id = f"{node_id}.{method_name}"
+                graph["nodes"].append({
+                    "id": if_node_id,
+                    "type": "Interface",
+                    "return_type": ret_type,
+                    "params": params.strip()[:100],
+                })
+                graph["edges"].append({
+                    "from": node_id,
+                    "to": if_node_id,
+                    "type": "provides",
+                })
+
+        # 提取 import 依赖
+        import_matches = re.findall(r'import\s+([\w.]+);', code)
+        for imp in import_matches:
+            # 仅记录项目内部依赖（com.medical.device.rental 包）
+            if "com.medical.device.rental" in imp:
+                target_simple = imp.split(".")[-1]
+                for node in graph["nodes"]:
+                    if node["id"].endswith("." + target_simple) or node["id"] == target_simple:
+                        for cm in class_matches:
+                            src_id = f"{pkg}.{cm[1]}" if pkg else cm[1]
+                            graph["edges"].append({
+                                "from": src_id,
+                                "to": node["id"],
+                                "type": "depends",
+                            })
+
+    # 去重边
+    seen = set()
+    unique_edges = []
+    for e in graph["edges"]:
+        key = (e["from"], e["to"], e["type"])
+        if key not in seen:
+            seen.add(key)
+            unique_edges.append(e)
+    graph["edges"] = unique_edges
+
+    return json.dumps(graph, ensure_ascii=False, indent=2)
+
+
+def _compare_graphs(forward_json: str, reverse_json: str) -> str:
+    """比对正向图谱（设计意图）和逆向图谱（实现事实）。
+
+    教材§14 RCR: 检查逆向图谱中的每一条依赖边是否在正向图谱中有合法对应，
+    检查逆向图谱中的每一个接口是否与正向图谱中的接口契约一致。
+
+    Returns:
+        差异报告字符串，无差异则返回空字符串。
+    """
+    try:
+        fg = json.loads(forward_json)
+        rg = json.loads(reverse_json)
+    except Exception:
+        return ""
+
+    lines = []
+
+    # ── 1. 组件级比对: 设计定义了但代码中缺失的 Component ──
+    fg_comp = {n["id"] for n in fg.get("nodes", []) if n["type"] == "Component"}
+    rg_comp = {n["id"] for n in rg.get("nodes", []) if n["type"] == "Component"}
+    missing_comp = fg_comp - rg_comp
+    extra_comp = rg_comp - fg_comp
+    if missing_comp:
+        lines.append(f"- **组件缺失**: 设计定义了但代码中未找到: {', '.join(sorted(missing_comp)[:10])}")
+    if extra_comp:
+        lines.append(f"- **额外组件**: 代码中存在但设计中未定义: {', '.join(sorted(extra_comp)[:10])}")
+
+    # ── 2. 依赖边比对: 逆向图谱的每条 depends 边 ──
+    fg_legal_edges = set()
+    fg_forbidden_edges = {}  # from→to → reason
+    for e in fg.get("edges", []):
+        if e.get("type") in ("depends",):
+            fg_legal_edges.add((e["from"], e["to"]))
+        elif e.get("type") == "forbidden":
+            fg_forbidden_edges[(e["from"], e["to"])] = e.get("reason", "")
+
+    rg_depends = [(e["from"], e["to"]) for e in rg.get("edges", []) if e.get("type") == "depends"]
+
+    illegal_deps = []
+    for src, tgt in rg_depends:
+        if (src, tgt) in fg_forbidden_edges:
+            reason = fg_forbidden_edges[(src, tgt)]
+            illegal_deps.append(f"  - {src} → {tgt}: 违反禁止依赖 ({reason})")
+        elif (src, tgt) not in fg_legal_edges and fg_legal_edges:
+            # 不在合法列表中（但有合法列表时才报告）
+            illegal_deps.append(f"  - {src} → {tgt}: 依赖未在设计拓扑中声明")
+    if illegal_deps:
+        lines.append(f"- **非法依赖边** ({len(illegal_deps)} 条):")
+        lines.extend(illegal_deps[:15])
+
+    # ── 3. 接口比对: 逆向图谱的 Interface 节点 vs 正向图谱 ──
+    fg_if = {n["id"] for n in fg.get("nodes", []) if n["type"] == "Interface"}
+    rg_if = {n["id"] for n in rg.get("nodes", []) if n["type"] == "Interface"}
+    # 正向图谱的 Interface 来自 OAS 路径（如 IF-POST-/api/v1/cells/allocate）
+    # 逆向图谱的 Interface 来自方法签名（如 com.xxx.CellService.allocateCell）
+    # 做模糊匹配而非精确匹配
+    fg_if_simple = {iid.split("/")[-1].lower() for iid in fg_if}
+    rg_if_simple = set()
+    for iid in rg_if:
+        # 提取方法名部分
+        parts = iid.split(".")
+        if len(parts) >= 2:
+            rg_if_simple.add(parts[-1].lower())
+    missing_if = fg_if_simple - rg_if_simple
+    if missing_if and len(fg_if_simple) > 0 and len(rg_if_simple) > 0:
+        lines.append(f"- **接口完整性**: 契约定义但代码未实现的方法/端点: {', '.join(sorted(missing_if)[:10])}")
+
+    # ── 4. 总体评估 ──
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
 def call_llm_with_memory(task_prompt: str, state: DesignState, system_prompt: str = "", max_tokens: int = 8000, sections: list[str] | None = None) -> str:
-    """带项目记忆注入的 LLM 调用 —— 等同于 Reasonix 的自动化约束注入。"""
+    """带项目记忆注入的 LLM 调用 —— 等同于 Reasonix 的自动化约束注入。
+
+    每次调用后自动累积 Stats 数据（教材§11 第四小节 要点三），
+    每 10 次调用自动写入磁盘快照。
+    """
     full_prompt = inject_project_memory(task_prompt, state, sections)
-    return call_llm(full_prompt, system_prompt=system_prompt, max_tokens=max_tokens)
+    result = call_llm(full_prompt, system_prompt=system_prompt, max_tokens=max_tokens)
+    # 自动累积 Stats
+    ds = state.get("date_str", datetime.now().strftime("%Y%m%d"))
+    save_stats_snapshot(ds)
+    return result
 
 # ============================================================
 # B_入口路由 — 根据 entry_mode 分发到 B1 或 B6
@@ -408,8 +1019,14 @@ def b1_architecture_selection(state: DesignState) -> dict:
     srs = state.get("srs_input", "")
     reqs = state.get("consolidated_requirements", "")
 
+    # ── Step 0: SRS 语义提取（架构分析智能体）──
+    fire_progress("  [B1] Step 0/3: SRS语义提取（架构分析智能体）...")
+    semantic = extract_srs_semantics(srs, reqs)
+    fire_progress(f"    [语义模型] 实体 {len(semantic.get('entities',[]))} 个, 功能 {len(semantic.get('functionals',[]))} 条, 规则 {len(semantic.get('rules',[]))} 条")
+    fire_result("semantic_model", json.dumps(semantic, ensure_ascii=False, indent=2))
+
     # ── Step 1: 五维评估 ──
-    fire_progress("  [B1] Step 1/2: 五维度架构选型评估...")
+    fire_progress("  [B1] Step 1/3: 五维度架构选型评估...")
     eval_prompt = f"""你正在为「医疗器械租赁管理系统」进行架构选型评估。你的输入是经过评审确认的SRS。
 
 ## 系统概述 (来自SRS)
@@ -421,10 +1038,12 @@ def b1_architecture_selection(state: DesignState) -> dict:
 ## 评估要求
 请按照五维度评估框架对四种候选架构风格（单体、分层、事件驱动、微服务）进行系统化评估。
 
+**一票否决机制**: 每个维度都可以构成一票否决——如果某一维度的条件极端不适合某种风格（score ≤ 1），则无论其他维度得分如何，该风格必须被排除，并在 analysis 中显式标注「一票否决」及理由。
+
 ### 评估步骤
 1. 从SRS中提取每个维度的关键信息
-2. 对每个维度分别打分（1-5分），并给出文本论证
-3. 综合五个维度的评估结果，给出推荐架构风格
+2. 对每个维度分别打分（1-5分），并给出文本论证。若某风格 score ≤ 1，标记为「一票否决」并排除
+3. 排除被否决的风格后，综合剩余维度的评估结果，给出推荐架构风格
 
 ### 输出格式（严格JSON）
 {{
@@ -451,7 +1070,7 @@ def b1_architecture_selection(state: DesignState) -> dict:
     fire_progress("  [B1] 五维评估完成")
 
     # ── Step 2: 生成 ADR-001 + ASD ──
-    fire_progress("  [B1] Step 2/2: 生成 ADR-001 + 架构风格声明(ASD)...")
+    fire_progress("  [B1] Step 2/3: 生成 ADR-001 + 架构风格声明(ASD)...")
 
     recommendation = eval_json.get("recommendation", {})
     primary_style = recommendation.get("primary_style", "分层")
@@ -524,7 +1143,7 @@ SRS摘要: {srs[:2000] if srs else '参见Phase 1基线'}
 
     # ── 保存到 KB ──
     adr_path = save_to_kb_design("adr", f"ADR-001-架构选型决策-{ds}.md",
-        kb_frontmatter("ADR-001: 架构选型决策", ["ADR", "架构决策", "Phase2"]) + adr_part)
+        kb_frontmatter_adr("ADR-001: 架构选型决策", status="已接受") + adr_part)
     asd_path = save_to_kb_design("spec", f"ASD-架构风格声明-{ds}.md",
         kb_frontmatter("ASD: 架构风格声明", ["ASD", "架构风格", "Phase2"]) + asd_part)
 
@@ -536,6 +1155,7 @@ SRS摘要: {srs[:2000] if srs else '参见Phase 1基线'}
     return {
         "adr_001": adr_part,
         "asd": asd_part,
+        "semantic_model": json.dumps(semantic, ensure_ascii=False),
         "workflow_status": "B1完成",
     }
 
@@ -673,7 +1293,7 @@ def b2_engineering_products(state: DesignState) -> dict:
     dts_path = save_to_kb_design("spec", f"DTS-依赖拓扑规范-{ds}.md",
         kb_frontmatter("DTS: 依赖拓扑规范", ["DTS", "依赖", "Phase2"]) + dts_doc)
     adr_path = save_to_kb_design("adr", f"ADR-002~4-技术栈数据库部署决策-{ds}.md",
-        kb_frontmatter("ADR-002~4: 技术栈/数据库/部署决策", ["ADR", "技术栈", "Phase2"]) + adr_002_004)
+        kb_frontmatter_adr("ADR-002~4: 技术栈/数据库/部署决策", status="已接受", tags=["技术栈"]) + adr_002_004)
 
     fire_progress(f"[B2] MDS 已保存: {mds_path}")
     fire_progress(f"[B2] DTS 已保存: {dts_path}")
@@ -786,25 +1406,25 @@ def b3_constraints_and_contracts(state: DesignState) -> dict:
 {adr_all[:3000]}
 
 ## 要求
-生成三层约束，每层至少5条约束：
+生成三层约束，每层至少5条约束。**每条约束必须以「禁止」「不得」「不允许」的负面形式书写**——明确告诉AI什么不能做，而非什么应该做。正面描述划定职责下限，负面约束划定职责上限，AI需要的是上限。
 
-### C-ARCH: 架构级约束
-- 禁止的跨层依赖（如表示层→数据层）
-- 通信协议限制（如同步/异步选择）
-- 部署边界约束
+### C-ARCH: 架构级约束（全局禁止规则）
+- 禁止的跨层依赖（如表示层→数据访问层直接调用）
+- 禁止的通信模式（如模块间禁止同步HTTP直调实现异步通知）
+- 禁止的部署耦合（如业务模块禁止直接依赖外部中间件）
 
-### C-MOD: 模块级约束
-- 模块间合法调用链
-- 模块职责边界（什么功能必须在哪个模块实现）
-- 共享内核限制
+### C-MOD: 模块级约束（模块禁止规则）
+- 模块间禁止的调用链（如 CellService 禁止同步调用 OrderService，必须通过事件协作）
+- 模块职责禁区（什么功能禁止在哪个模块实现——如通知发送禁止在 OrderService 中实现）
+- 禁止的共享依赖（如多个模块禁止共享同一个数据库表）
 
-### C-CODE: 代码级约束
-- 命名规范（包名/类名/方法名）
-- 异常处理规范
-- 日志规范
-- 测试覆盖要求
+### C-CODE: 代码级约束（代码禁止规则）
+- 禁止的命名模式（如 Service 层禁止使用 DAO 后缀，禁止使用拼音命名）
+- 禁止的异常处理方式（如禁止吞掉异常不记录日志，禁止在循环内捕获异常后继续）
+- 禁止的日志行为（如禁止在循环内打印日志，禁止使用 System.out）
+- 禁止的类型使用（如金额禁止使用 float/double，日期禁止使用字符串拼接）
 
-格式: C-ARCH-001, C-MOD-001, C-CODE-001 等编号，每条约束包含：ID、标题、描述、违反后果。
+格式: C-ARCH-001, C-MOD-001, C-CODE-001 等编号，每条约束包含：ID、标题、禁止内容、违反后果。
 
 输出完整 TLCD 文档（Markdown）。"""
 
@@ -829,11 +1449,23 @@ def b3_constraints_and_contracts(state: DesignState) -> dict:
 
 ## 要求
 1. 为每个模块至少定义 2-3 个 REST 端点
-2. 包含完整的 path、parameters、requestBody、responses
-3. 定义所有 schemas（DTO、Entity、Error）
-4. 使用统一命名规范（如 /api/v1/equipment）
-5. 包含 securitySchemes（Bearer JWT）
-6. 输出纯 YAML（不要用 Markdown 代码块包裹，直接输出 YAML）
+2. **字段级精度（强制）**: 每个 schema 的每个字段必须包含:
+   - `type` + `format`（如 type: string, format: date-time）
+   - `description`（业务语义描述，如"用户的手机号码"，而非技术描述"String类型字段"）
+   - `example`（真实的业务示例值，AI 从示例值推断字段格式）
+   - `nullable` 标注
+   - 必填字段在 `required` 数组中列出
+3. **错误码三层语义（强制）**: 每个端点 ≥2 种错误响应，每种错误包含:
+   - 第一层: HTTP 状态码（400/401/403/404/409/500）
+   - 第二层: 应用错误码（如 INVALID_ORDER、CELL_UNAVAILABLE）
+   - 第三层: 调用方处理策略（如"调用方应向用户展示'暂无可用的格口，请稍后重试'"）
+4. **向后兼容（强制）**: 在 OpenAPI info 节点中包含:
+   - `x-version: "v1"`（契约版本号，每次变更递增）
+   - `x-changelog`（变更日志数组，记录每次变更的日期、变更内容、影响范围）
+5. 定义所有 schemas（DTO、Entity、Error），每个 schema 的 description 写清楚业务含义
+6. 使用统一命名规范（如 /api/v1/equipment）
+7. 包含 securitySchemes（Bearer JWT）
+8. 输出纯 YAML（不要用 Markdown 代码块包裹，直接输出 YAML）
 
 输出完整的 OpenAPI 3.0 YAML 文档。"""
 
@@ -885,6 +1517,7 @@ def b4_code_generation(state: DesignState) -> dict:
     ]
 
     generated_files = []
+    all_code = ""       # 累积全部生成代码，供实现记忆注入
     context_summary = ""
 
     for pass_label, pass_desc, max_tok in passes:
@@ -908,6 +1541,8 @@ def b4_code_generation(state: DesignState) -> dict:
         code = call_llm_with_memory(task, state,
             system_prompt="你是资深 Java Spring Boot 开发专家。生成生产级代码，严格遵循上下文中的架构约束。",
             max_tokens=max_tok)
+
+        all_code += code + "\n"
 
         # 解析并写入文件
         import re
@@ -939,9 +1574,17 @@ def b4_code_generation(state: DesignState) -> dict:
     save_to_kb_design("reports", f"代码生成报告-{ds}.md",
         kb_frontmatter("代码生成报告", ["代码生成", "Phase2"]) + report)
 
+    # 构建正向知识图谱（设计意图图谱）
+    fire_progress("  [B4] 构建正向知识图谱...")
+    forward_graph = build_forward_graph(state)
+    fg_path = save_to_kb_design("reports", f"正向知识图谱-{ds}.json", forward_graph)
+    fire_progress(f"  [B4] 正向图谱已保存: {fg_path}")
+
     return {
         "source_code_summary": summary,
         "source_code_path": project_dir,
+        "generated_code": all_code,
+        "forward_graph": forward_graph,
         "workflow_status": "B4完成",
     }
 
@@ -976,17 +1619,34 @@ def b5_rcr_check(state: DesignState) -> dict:
                         pass
         code_summary = "\n\n".join(java_files[:20])
 
+    # ── CodeGraph 逆向图谱提取 ──
+    fire_progress(f"  [B5] CodeGraph 逆向图谱提取... ({len(java_files) if java_files else 0} 个文件)")
+    reverse_graph = extract_reverse_graph(source_path)
+    rg_path = save_to_kb_design("reports", f"逆向知识图谱-round{current_round}-{ds}.json", reverse_graph)
+    fire_progress(f"  [B5] 逆向图谱已保存: {rg_path}")
+
+    # ── 图谱 diff（正向 vs 逆向）──
+    # 教材§14: RCR = 检查逆向图谱每条边是否在正向图谱中有合法对应
+    graph_diff_report = _compare_graphs(state.get("forward_graph", "{}"), reverse_graph)
+    if graph_diff_report:
+        fire_progress(f"  [B5] 图谱 diff: {graph_diff_report}")
+        # 将程序化 diff 结果注入 LLM prompt 辅助分析
+        graph_diff_context = f"\n\n## 程序化图谱 Diff 结果（辅助参考）\n{graph_diff_report}\n"
+    else:
+        fire_progress(f"  [B5] 图谱 diff: 正向/逆向一致 ✓")
+        graph_diff_context = ""
+
     # ── RCR 检测 ──
     fire_progress(f"  [B5] 扫描代码 vs 设计约束... ({len(java_files) if java_files else 0} 个文件)")
     rcr_task = f"""你是 CodeGraph 逆向一致性校验 (RCR) 分析师。比对上文中自动注入的「设计规范」和以下「代码实现」，检测 4 类设计漂移。
-
+{graph_diff_context}
 ## 代码实现
 {code_summary[:6000] if code_summary else '(代码未生成或数量不足)'}
 
 ## 4 类漂移检测
-1. **依赖合规性漂移**: 代码中的依赖是否违反 DTS 约束?
+1. **依赖合规性漂移**: 代码中的依赖是否违反 DTS 约束? 参照程序化 diff 中的「非法依赖边」列表
 2. **层次穿透漂移**: 是否存在跨层调用 (Controller→Repository 跳过 Service)?
-3. **接口完整性漂移**: 代码接口是否与 OpenAPI 契约一致?
+3. **接口完整性漂移**: 代码接口是否与 OpenAPI 契约一致? 参照程序化 diff 中的接口比对
 4. **命名一致性漂移**: 命名是否与 MDS 术语表一致?
 
 ## 输出格式（严格JSON）
@@ -1020,9 +1680,14 @@ def b5_rcr_check(state: DesignState) -> dict:
     save_to_kb_design("reports", f"RCR-逆向校验报告-round{current_round}-{ds}.md",
         kb_frontmatter(f"RCR 逆向校验报告 Round {current_round}", ["RCR", "漂移", "Phase2"]) + rcr_doc)
 
+    # 保存设计-实现差距报告（教材§11 第四小节 要点二）
+    gap_path = save_design_gap_report(state, ds)
+    if gap_path:
+        fire_progress(f"[B5] 设计-实现差距报告已保存: {gap_path}")
+
     if not drift_items:
         fire_progress(f"[B5] 未检测到漂移，通过!")
-        return {"drift_list_raw": rcr_result, "drift_items": [], "drift_resolved": True, "drift_round": current_round, "workflow_status": "B5通过"}
+        return {"drift_list_raw": rcr_result, "drift_items": [], "drift_resolved": True, "drift_round": current_round, "reverse_graph": reverse_graph, "workflow_status": "B5通过"}
 
     fire_progress(f"[B5] 检测到 {len(drift_items)} 项漂移，等待人工决策...")
     fire_result("b5_drift_items", json.dumps(drift_items, ensure_ascii=False))
@@ -1133,6 +1798,8 @@ def bl01_create_baseline(state: DesignState) -> dict:
 
     fire_progress(f"[BL01] 基线 {bl_ver} 创立完成 ({file_count} 源文件, {len(artifacts)} 文档)")
     fire_result("bl_01_version", bl_ver)
+    # 强制保存最终 Stats 快照
+    save_stats_snapshot(ds, force=True)
     return {"bl_01_version": bl_ver, "workflow_status": "BL01完成"}
 
 
@@ -1147,7 +1814,32 @@ def b6_change_closure(state: DesignState) -> dict:
     if change_round == 1 and cr:
         fire_progress("  [B6] 生成 CIA 变更影响分析...")
         cia = call_llm(
-            f"你是CIA专家。分析此变更的9维度影响。\n## CR\n{cr[:4000]}\n## MDS\n{state.get('mds','')[:2000]}\n## TLCD\n{state.get('tlcd','')[:2000]}",
+            f"""你是CIA专家。基于CR文档和当前设计产物，执行9维度变更影响分析。
+
+## CR（变更请求）
+{cr[:4000]}
+
+## 当前设计产物
+### MDS
+{state.get('mds','')[:2000]}
+### TLCD
+{state.get('tlcd','')[:2000]}
+
+## 9维度评估（逐项标注受影响程度：无/轻微/中等/严重）
+1. **需求层面**: SRS中哪些需求条目受影响? 是否需更新RTM?
+2. **架构层面**: 是否影响ASD架构约束或分层规则?
+3. **模块层面**: 涉及哪些模块的修改? 模块间依赖是否变化?
+4. **契约层面**: OpenAPI接口的请求体/响应体/错误码是否变化?
+5. **代码层面**: 需要修改哪些源文件? 新增哪些文件?
+6. **数据层面**: 数据库Schema/索引/缓存策略是否需要变更?
+7. **兼容性层面**: 旧版本客户端是否仍能正常工作? 是否需要API版本升级?
+8. **测试层面**: 哪些已有测试用例会受影响? 需新增哪些测试?
+9. **部署运维层面**: CI/CD配置/监控告警/部署顺序是否需要调整?
+
+## 输出格式
+生成完整的CIA报告，包含:
+- 9维度评估表（每维度: 受影响程度 + 具体说明）
+- 变更实施建议（推荐的实施顺序和风险缓解措施）""",
             system_prompt="你是变更影响分析专家。系统化评估变更影响。", max_tokens=8000)
         fire_result("cia", cia)
         save_to_kb_design("reports", f"CIA-变更影响分析-{ds}.md",
@@ -1165,12 +1857,46 @@ def b6_change_closure(state: DesignState) -> dict:
     bl_dir = os.path.join(KB_DIRS_DESIGN["baselines"], bl_ver)
     os.makedirs(bl_dir, exist_ok=True)
     save_to_kb_design("baselines", f"{bl_ver}/ADR-005-变更决策.md",
-        kb_frontmatter("ADR-005: 变更决策", ["ADR", "变更", bl_ver]) + adr_005)
+        kb_frontmatter_adr("ADR-005: 变更决策", status="已接受", replaces="ADR-001", tags=["变更", bl_ver]) + adr_005)
     save_to_kb_design("baselines", f"{bl_ver}/设计资产包.md",
         kb_frontmatter("5层设计资产包", ["资产", bl_ver]) + asset_pack)
 
-    fire_progress(f"[B6] ADR-005 + BL-02 {bl_ver} 完成")
+    # ── 生成需求差异文档（BL-01 → BL-02）──
+    bl_01_ver = state.get("bl_01_version", f"BL-{ds}-01")
+    diff_doc = f"""---
+title: 需求差异-BL01-BL02
+tags: [差异, 基线, 变更]
+---
+
+# 需求差异比对: {bl_01_ver} → {bl_ver}
+
+## CR 变更来源
+{cr[:2000] if cr else '参见 CR 文档'}
+
+## CIA 影响摘要
+{state.get('cia', '')[:2000]}
+
+## 设计变更
+- **ADR-005**: {adr_005[:500] if adr_005 else '参见 ADR-005'}
+- **契约更新**: 接口变更见 CIA 第4维度
+- **依赖拓扑更新**: 模块依赖变更见 CIA 第3维度
+
+## 基线对比
+| 维度 | BL-01 | BL-02 | 变更类型 |
+|------|-------|-------|---------|
+| 架构风格 | 未变更 | 同 BL-01 | 无变更 |
+| 模块划分 | 未变更 | 同 BL-01 | 无变更 |
+| 接口契约 | v1 | v2 | 修改 |
+| 代码实现 | v1 | v2 | 修改 |
+| 设计约束 | TLCD v1 | TLCD v2 | 修改 |
+"""
+    save_to_kb_design("baselines", f"{bl_ver}/DIFF_BL01-BL02_需求差异比对.md", diff_doc)
+
+    fire_progress(f"[B6] ADR-005 + BL-02 {bl_ver} + DIFF 完成")
     fire_result("adr_005", adr_005); fire_result("asset_pack", asset_pack); fire_result("bl_02_version", bl_ver)
+    # 强制保存最终 Stats 快照 + 设计-实现差距报告
+    save_stats_snapshot(ds, force=True)
+    save_design_gap_report(state, ds)
     return {"adr_005": adr_005, "asset_pack": asset_pack, "bl_02_version": bl_ver, "change_round": change_round, "workflow_status": "变更闭环完成"}
 
 
@@ -1327,6 +2053,7 @@ def main():
         "srs_input": srs_text,
         "rtm_input": rtm_text,
         "consolidated_requirements": req_text,
+        "semantic_model": "",
         "entry_mode": entry_mode,
         "date_str": datetime.now().strftime("%Y%m%d"),
         "time_str": datetime.now().strftime("%H%M"),
@@ -1339,6 +2066,9 @@ def main():
         "openapi_yaml": "",
         "source_code_summary": "",
         "source_code_path": "",
+        "generated_code": "",
+        "forward_graph": "",
+        "reverse_graph": "",
         "drift_list_raw": "",
         "drift_items": [],
         "drift_decisions": [],

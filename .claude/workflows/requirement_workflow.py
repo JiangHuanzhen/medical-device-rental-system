@@ -446,8 +446,20 @@ class RequirementState(TypedDict):
 # 🛠 工具函数
 # ============================================================
 
+# ── Stats 累积器（教材§11 第四小节: Stats数据趋势监控）──
+_LAST_USAGE = {}          # 最近一次 LLM 调用的 token 用量
+_SESSION_STATS = {         # 当前会话累计
+    "total_calls": 0,
+    "total_prompt_tokens": 0,
+    "total_completion_tokens": 0,
+    "total_cache_creation": 0,   # 写入缓存的 token
+    "total_cache_read": 0,       # 从缓存命中读取的 token
+}
+
+
 def call_llm(prompt: str, system_prompt: str = "", max_tokens: int = 16000) -> str:
-    """调用LLM，支持自定义 max_tokens"""
+    """调用LLM，支持自定义 max_tokens。同时记录 token 用量供 Stats 监控。"""
+    global _LAST_USAGE, _SESSION_STATS
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LLM_API_KEY}"}
     messages = []
     if system_prompt:
@@ -457,9 +469,44 @@ def call_llm(prompt: str, system_prompt: str = "", max_tokens: int = 16000) -> s
     try:
         resp = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=300)
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        body = resp.json()
+        # 提取 usage 统计
+        usage = body.get("usage", {})
+        _LAST_USAGE = {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        }
+        # DeepSeek/OpenAI 兼容: 缓存相关字段
+        cache_create = usage.get("prompt_tokens_details", {}).get("cache_creation_input_tokens", 0)
+        cache_read = usage.get("prompt_tokens_details", {}).get("cache_read_input_tokens", 0)
+        _LAST_USAGE["cache_creation_tokens"] = cache_create
+        _LAST_USAGE["cache_read_tokens"] = cache_read
+        # 累积
+        _SESSION_STATS["total_calls"] += 1
+        _SESSION_STATS["total_prompt_tokens"] += _LAST_USAGE["prompt_tokens"]
+        _SESSION_STATS["total_completion_tokens"] += _LAST_USAGE["completion_tokens"]
+        _SESSION_STATS["total_cache_creation"] += cache_create
+        _SESSION_STATS["total_cache_read"] += cache_read
+        return body["choices"][0]["message"]["content"]
     except Exception as e:
         return f"[LLM调用失败: {e}]"
+
+
+def get_last_usage() -> dict:
+    """获取最近一次 LLM 调用的 token 用量"""
+    return dict(_LAST_USAGE)
+
+
+def get_session_stats() -> dict:
+    """获取当前会话累计 token 用量"""
+    s = dict(_SESSION_STATS)
+    total_input = s["total_prompt_tokens"]
+    cache_read = s["total_cache_read"]
+    # 未命中缓存的 prompt token = 总 prompt - 缓存命中读取
+    non_cache = total_input - cache_read if total_input > cache_read else 0
+    s["cache_hit_rate"] = round(cache_read / (cache_read + non_cache) * 100, 1) if (cache_read + non_cache) > 0 else 0.0
+    return s
 
 
 def call_stakeholder(stakeholder: str, question: str) -> str:
